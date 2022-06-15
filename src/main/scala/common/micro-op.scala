@@ -135,6 +135,10 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val bp_debug_if      = Bool()             // Breakpoint
   val bp_xcpt_if       = Bool()             // Breakpoint
 
+  // blindedness
+  val fault_if_rs1_blinded  = Bool()             // fault if input operand rs1 is blinded
+  val fault_if_rs2_blinded  = Bool()             // fault if input operand rs2 is blinded
+  val unblind_output        = Bool()             // default is to blind output operand if any input operand is blinded; if unblind_output is true, do not blind output
 
   // What prediction structure provides the prediction FROM this op
   val debug_fsrc       = UInt(BSRC_SZ.W)

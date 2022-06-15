@@ -168,7 +168,7 @@ class WithNMediumBooms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
         )
       } ++ prev
     }
-    case SystemBusKey => up(SystemBusKey, site).copy(beatBytes = 8)
+    case SystemBusKey => up(SystemBusKey, site).copy(beatBytes = 9)
     case XLen => 64
   })
 )

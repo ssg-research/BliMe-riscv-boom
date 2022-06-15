@@ -24,11 +24,30 @@ import freechips.rocketchip.config.{Parameters}
 import freechips.rocketchip.rocket.{BP}
 import freechips.rocketchip.tile.{XLen, RoCCCoreIO}
 import freechips.rocketchip.tile
+import freechips.rocketchip.util.{Blinded}
 
 import FUConstants._
 import boom.common._
 import boom.ifu.{GetPCFromFtqIO}
 import boom.util.{ImmGen, IsKilledByBranch, BranchKillableQueue, BoomCoreStringPrefix}
+
+/**
+ * Request sent to Execution Unit.
+ *
+ * @param dataWidth width of the data coming from the execution unit
+ */
+class ExeUnitReq(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
+  with HasBoomUOP
+{
+  val numOperands = 3
+
+  val rs1_data = Blinded(UInt(dataWidth.W))
+  val rs2_data = Blinded(UInt(dataWidth.W))
+  val rs3_data = Blinded(UInt(dataWidth.W)) // only used for FMA units
+  val pred_data = Bool()
+
+  val kill = Bool() // kill everything
+}
 
 /**
  * Response from Execution Unit. Bundles a MicroOp with data
@@ -38,7 +57,7 @@ import boom.util.{ImmGen, IsKilledByBranch, BranchKillableQueue, BoomCoreStringP
 class ExeUnitResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   with HasBoomUOP
 {
-  val data = Bits(dataWidth.W)
+  val data = Blinded(Bits(dataWidth.W))
   val predicated = Bool() // Was this predicated off?
   val fflags = new ValidIO(new FFlagsResp) // write fflags to ROB // TODO: Do this better
 }
@@ -105,7 +124,7 @@ abstract class ExecutionUnit(
   val io = IO(new Bundle {
     val fu_types = Output(Bits(FUC_SZ.W))
 
-    val req      = Flipped(new DecoupledIO(new FuncUnitReq(dataWidth)))
+    val req      = Flipped(new DecoupledIO(new ExeUnitReq(dataWidth)))
 
     val iresp    = if (writesIrf)   new DecoupledIO(new ExeUnitResp(dataWidth)) else null
     val fresp    = if (writesFrf)   new DecoupledIO(new ExeUnitResp(dataWidth)) else null
@@ -178,6 +197,9 @@ abstract class ExecutionUnit(
       fdiv = hasFdiv,
       ifpu = hasIfpu)
   }
+
+  // blindedness
+  val blinded_result = Mux(io.req.bits.uop.unblind_output, false.B, io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded || io.req.bits.rs3_data.blinded)
 }
 
 /**
@@ -271,10 +293,11 @@ class ALUExeUnit(
 
     alu.io.req.bits.uop      := io.req.bits.uop
     alu.io.req.bits.kill     := io.req.bits.kill
-    alu.io.req.bits.rs1_data := io.req.bits.rs1_data
-    alu.io.req.bits.rs2_data := io.req.bits.rs2_data
+    alu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    alu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
     alu.io.req.bits.rs3_data := DontCare
     alu.io.req.bits.pred_data := io.req.bits.pred_data
+    alu.io.req.bits.blinded_result := blinded_result
     alu.io.resp.ready := DontCare
     alu.io.brupdate := io.brupdate
 
@@ -297,8 +320,9 @@ class ALUExeUnit(
     rocc.io.req.bits          := DontCare
     rocc.io.req.bits.uop      := io.req.bits.uop
     rocc.io.req.bits.kill     := io.req.bits.kill
-    rocc.io.req.bits.rs1_data := io.req.bits.rs1_data
-    rocc.io.req.bits.rs2_data := io.req.bits.rs2_data
+    rocc.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    rocc.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
+    rocc.io.req.bits.blinded_result := blinded_result
     rocc.io.brupdate          := io.brupdate // We should assert on this somewhere
     rocc.io.status            := io.status
     rocc.io.exception         := io.com_exception
@@ -318,9 +342,10 @@ class ALUExeUnit(
     imul.io <> DontCare
     imul.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_MUL)
     imul.io.req.bits.uop      := io.req.bits.uop
-    imul.io.req.bits.rs1_data := io.req.bits.rs1_data
-    imul.io.req.bits.rs2_data := io.req.bits.rs2_data
+    imul.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    imul.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
     imul.io.req.bits.kill     := io.req.bits.kill
+    imul.io.req.bits.blinded_result := blinded_result
     imul.io.brupdate := io.brupdate
     iresp_fu_units += imul
   }
@@ -330,6 +355,10 @@ class ALUExeUnit(
     ifpu = Module(new IntToFPUnit(latency=intToFpLatency))
     ifpu.io.req        <> io.req
     ifpu.io.req.valid  := io.req.valid && io.req.bits.uop.fu_code_is(FU_I2F)
+    ifpu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    ifpu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
+    ifpu.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
+    ifpu.io.req.bits.blinded_result := blinded_result
     ifpu.io.fcsr_rm    := io.fcsr_rm
     ifpu.io.brupdate   <> io.brupdate
     ifpu.io.resp.ready := DontCare
@@ -358,8 +387,9 @@ class ALUExeUnit(
     div.io <> DontCare
     div.io.req.valid           := io.req.valid && io.req.bits.uop.fu_code_is(FU_DIV) && hasDiv.B
     div.io.req.bits.uop        := io.req.bits.uop
-    div.io.req.bits.rs1_data   := io.req.bits.rs1_data
-    div.io.req.bits.rs2_data   := io.req.bits.rs2_data
+    div.io.req.bits.rs1_data   := io.req.bits.rs1_data.bits
+    div.io.req.bits.rs2_data   := io.req.bits.rs2_data.bits
+    div.io.req.bits.blinded_result := blinded_result
     div.io.brupdate            := io.brupdate
     div.io.req.bits.kill       := io.req.bits.kill
 
@@ -379,6 +409,10 @@ class ALUExeUnit(
     val maddrcalc = Module(new MemAddrCalcUnit)
     maddrcalc.io.req        <> io.req
     maddrcalc.io.req.valid  := io.req.valid && io.req.bits.uop.fu_code_is(FU_MEM)
+    maddrcalc.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    maddrcalc.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
+    maddrcalc.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
+    maddrcalc.io.req.bits.blinded_result := blinded_result
     maddrcalc.io.brupdate     <> io.brupdate
     maddrcalc.io.status     := io.status
     maddrcalc.io.bp         := io.bp
@@ -470,11 +504,12 @@ class FPUExeUnit(
                                 (io.req.bits.uop.fu_code_is(FU_FPU) ||
                                 io.req.bits.uop.fu_code_is(FU_F2I)) // TODO move to using a separate unit
     fpu.io.req.bits.uop      := io.req.bits.uop
-    fpu.io.req.bits.rs1_data := io.req.bits.rs1_data
-    fpu.io.req.bits.rs2_data := io.req.bits.rs2_data
-    fpu.io.req.bits.rs3_data := io.req.bits.rs3_data
+    fpu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    fpu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
+    fpu.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
     fpu.io.req.bits.pred_data := false.B
     fpu.io.req.bits.kill     := io.req.bits.kill
+    fpu.io.req.bits.blinded_result := blinded_result
     fpu.io.fcsr_rm           := io.fcsr_rm
     fpu.io.brupdate          := io.brupdate
     fpu.io.resp.ready        := DontCare
@@ -493,11 +528,12 @@ class FPUExeUnit(
     fdivsqrt = Module(new FDivSqrtUnit())
     fdivsqrt.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_FDV)
     fdivsqrt.io.req.bits.uop      := io.req.bits.uop
-    fdivsqrt.io.req.bits.rs1_data := io.req.bits.rs1_data
-    fdivsqrt.io.req.bits.rs2_data := io.req.bits.rs2_data
+    fdivsqrt.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+    fdivsqrt.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
     fdivsqrt.io.req.bits.rs3_data := DontCare
     fdivsqrt.io.req.bits.pred_data := false.B
     fdivsqrt.io.req.bits.kill     := io.req.bits.kill
+    fdivsqrt.io.req.bits.blinded_result := blinded_result
     fdivsqrt.io.fcsr_rm           := io.fcsr_rm
     fdivsqrt.io.brupdate          := io.brupdate
 
@@ -543,7 +579,8 @@ class FPUExeUnit(
       entries = 3)) // Lets us backpressure floating point store data
     fp_sdq.io.enq.valid      := io.req.valid && io.req.bits.uop.uopc === uopSTA && !IsKilledByBranch(io.brupdate, io.req.bits.uop)
     fp_sdq.io.enq.bits.uop   := io.req.bits.uop
-    fp_sdq.io.enq.bits.data  := ieee(io.req.bits.rs2_data)
+    fp_sdq.io.enq.bits.data.bits  := ieee(io.req.bits.rs2_data.bits)
+    fp_sdq.io.enq.bits.data.blinded := io.req.bits.rs2_data.blinded
     fp_sdq.io.enq.bits.predicated := false.B
     fp_sdq.io.enq.bits.fflags := DontCare
     fp_sdq.io.brupdate         := io.brupdate

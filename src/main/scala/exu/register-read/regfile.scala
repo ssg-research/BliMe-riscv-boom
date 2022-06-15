@@ -17,6 +17,7 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.config.Parameters
+import freechips.rocketchip.util.{Blinded}
 
 import boom.common._
 import boom.util.{BoomCoreStringPrefix}
@@ -30,7 +31,7 @@ import boom.util.{BoomCoreStringPrefix}
 class RegisterFileReadPortIO(val addrWidth: Int, val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 {
   val addr = Input(UInt(addrWidth.W))
-  val data = Output(UInt(dataWidth.W))
+  val data = Output(Blinded(UInt(dataWidth.W)))
 }
 
 /**
@@ -42,7 +43,7 @@ class RegisterFileReadPortIO(val addrWidth: Int, val dataWidth: Int)(implicit p:
 class RegisterFileWritePort(val addrWidth: Int, val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 {
   val addr = UInt(addrWidth.W)
-  val data = UInt(dataWidth.W)
+  val data = Blinded(UInt(dataWidth.W))
 }
 
 /**
@@ -114,12 +115,12 @@ class RegisterFileSynthesizable(
 {
   // --------------------------------------------------------------
 
-  val regfile = Mem(numRegisters, UInt(registerWidth.W))
+  val regfile = Mem(numRegisters, Blinded(UInt(registerWidth.W)))
 
   // --------------------------------------------------------------
   // Read ports.
 
-  val read_data = Wire(Vec(numReadPorts, UInt(registerWidth.W)))
+  val read_data = Wire(Vec(numReadPorts, Blinded(UInt(registerWidth.W))))
 
   // Register the read port addresses to give a full cycle to the RegisterRead Stage (if desired).
   val read_addrs = io.read_ports.map(p => RegNext(p.addr))

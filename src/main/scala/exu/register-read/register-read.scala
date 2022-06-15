@@ -15,6 +15,7 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.config.Parameters
+import freechips.rocketchip.util.{Blinded}
 
 import boom.common._
 import boom.util._
@@ -57,7 +58,7 @@ class RegisterRead(
     val pred_bypass = Input(Vec(numTotalPredBypassPorts, Valid(new ExeUnitResp(1))))
 
     // send micro-ops to the execution pipelines
-    val exe_reqs = Vec(issueWidth, (new DecoupledIO(new FuncUnitReq(registerWidth))))
+    val exe_reqs = Vec(issueWidth, (new DecoupledIO(new ExeUnitReq(registerWidth))))
 
     val kill   = Input(Bool())
     val brupdate = Input(new BrUpdateInfo())
@@ -68,10 +69,10 @@ class RegisterRead(
 
   val exe_reg_valids   = RegInit(VecInit(Seq.fill(issueWidth) { false.B }))
   val exe_reg_uops     = Reg(Vec(issueWidth, new MicroOp()))
-  val exe_reg_rs1_data = Reg(Vec(issueWidth, Bits(registerWidth.W)))
-  val exe_reg_rs2_data = Reg(Vec(issueWidth, Bits(registerWidth.W)))
-  val exe_reg_rs3_data = Reg(Vec(issueWidth, Bits(registerWidth.W)))
-  val exe_reg_pred_data = Reg(Vec(issueWidth, Bool()))
+  val exe_reg_rs1_data = Reg(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val exe_reg_rs2_data = Reg(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val exe_reg_rs3_data = Reg(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val exe_reg_pred_data = Reg(Vec(issueWidth, Blinded(Bool())))
 
   //-------------------------------------------------------------
   // hook up inputs
@@ -91,10 +92,10 @@ class RegisterRead(
 
   require (numTotalReadPorts == numReadPortsArray.reduce(_+_))
 
-  val rrd_rs1_data   = Wire(Vec(issueWidth, Bits(registerWidth.W)))
-  val rrd_rs2_data   = Wire(Vec(issueWidth, Bits(registerWidth.W)))
-  val rrd_rs3_data   = Wire(Vec(issueWidth, Bits(registerWidth.W)))
-  val rrd_pred_data  = Wire(Vec(issueWidth, Bool()))
+  val rrd_rs1_data   = Wire(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val rrd_rs2_data   = Wire(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val rrd_rs3_data   = Wire(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val rrd_pred_data  = Wire(Vec(issueWidth, Blinded(Bool())))
   rrd_rs1_data := DontCare
   rrd_rs2_data := DontCare
   rrd_rs3_data := DontCare
@@ -125,7 +126,7 @@ class RegisterRead(
     if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
     if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+2).data)
 
-    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(io.iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, false.B)
+    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(io.iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, Blinded(false.B))
 
     val rrd_kill = io.kill || IsKilledByBranch(io.brupdate, rrd_uops(w))
 
@@ -149,16 +150,16 @@ class RegisterRead(
   //       them!).
   //    - only bypass integer registers.
 
-  val bypassed_rs1_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
-  val bypassed_rs2_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
-  val bypassed_pred_data = Wire(Vec(issueWidth, Bool()))
+  val bypassed_rs1_data = Wire(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val bypassed_rs2_data = Wire(Vec(issueWidth, Blinded(Bits(registerWidth.W))))
+  val bypassed_pred_data = Wire(Vec(issueWidth, Blinded(Bool())))
   bypassed_pred_data := DontCare
 
   for (w <- 0 until issueWidth) {
     val numReadPorts = numReadPortsArray(w)
-    var rs1_cases = Array((false.B, 0.U(registerWidth.W)))
-    var rs2_cases = Array((false.B, 0.U(registerWidth.W)))
-    var pred_cases = Array((false.B, 0.U(1.W)))
+    var rs1_cases = Array((false.B, Blinded(0.U(registerWidth.W))))
+    var rs2_cases = Array((false.B, Blinded(0.U(registerWidth.W))))
+    var pred_cases = Array((false.B, Blinded(0.U(1.W))))
 
     val prs1       = rrd_uops(w).prs1
     val lrs1_rtype = rrd_uops(w).lrs1_rtype

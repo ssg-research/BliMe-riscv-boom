@@ -28,7 +28,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
     val resp = Output(Bool())
     val idx = Output(Valid(UInt()))
     val data_req = Decoupled(new L1DataReadReq)
-    val data_resp = Input(UInt(encRowBits.W))
+    val data_resp = Input(BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))
     val mem_grant = Input(Bool())
     val release = Decoupled(new TLBundleC(edge.bundle))
     val lsu_release = Decoupled(new TLBundleC(edge.bundle))
@@ -43,7 +43,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   val r2_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
   val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.release)
-  val wb_buffer = Reg(Vec(refillCycles, UInt(encRowBits.W)))
+  val wb_buffer = Reg(Vec(refillCycles, BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
   val acked = RegInit(false.B)
 
   io.idx.valid       := state =/= s_invalid
@@ -67,14 +67,14 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
                           toAddress = r_address,
                           lgSize = lgCacheBlockBytes.U,
                           reportPermissions = req.param,
-                          data = wb_buffer(data_req_cnt))
+                          data = Cat(wb_buffer(data_req_cnt).blindmask, wb_buffer(data_req_cnt).bits))
 
   val voluntaryRelease = edge.Release(
                           fromSource = id.U,
                           toAddress = r_address,
                           lgSize = lgCacheBlockBytes.U,
                           shrinkPermissions = req.param,
-                          data = wb_buffer(data_req_cnt))._2
+                          data = Cat(wb_buffer(data_req_cnt).blindmask, wb_buffer(data_req_cnt).bits))._2
 
 
   when (state === s_invalid) {
@@ -268,7 +268,7 @@ abstract class AbstractBoomDataArray(implicit p: Parameters) extends BoomModule 
   val io = IO(new BoomBundle {
     val read  = Input(Vec(memWidth, Valid(new L1DataReadReq)))
     val write = Input(Valid(new L1DataWriteReq))
-    val resp  = Output(Vec(memWidth, Vec(nWays, Bits(encRowBits.W))))
+    val resp  = Output(Vec(memWidth, Vec(nWays, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W)))))
     val nacks = Output(Vec(memWidth, Bool()))
   })
 
@@ -288,10 +288,10 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
         name = s"array_${w}_${j}",
         desc = "Non-blocking DCache Data Array",
         size = nSets * refillCycles,
-        data = Vec(rowWords, Bits(encDataBits.W))
+        data = Vec(rowWords, Bits((encDataBits + coreDataBytes).W))
       )
       when (io.write.bits.way_en(w) && io.write.valid) {
-        val data = VecInit((0 until rowWords) map (i => io.write.bits.data(encDataBits*(i+1)-1,encDataBits*i)))
+        val data = VecInit((0 until rowWords) map (i => Cat(io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i), io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i))))
         array.write(waddr, data, io.write.bits.wmask.asBools)
       }
       io.resp(j)(w) := RegNext(array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt)
@@ -344,14 +344,14 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
   val s2_nacks          = RegNext(s1_nacks)
 
   for (w <- 0 until nWays) {
-    val s2_bank_reads = Reg(Vec(nBanks, Bits(encRowBits.W)))
+    val s2_bank_reads = Reg(Vec(nBanks, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
 
     for (b <- 0 until nBanks) {
       val (array, omSRAM) = DescribedSRAM(
         name = s"array_${w}_${b}",
         desc = "Non-blocking DCache Data Array",
         size = bankSize,
-        data = Vec(rowWords, Bits(encDataBits.W))
+        data = Vec(rowWords, Bits((encDataBits + coreDataBytes).W))
       )
       val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
       val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.bits.way_en))
@@ -701,7 +701,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   }
   assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
 
-  val s2_data = Wire(Vec(memWidth, Vec(nWays, UInt(encRowBits.W))))
+  val s2_data = Wire(Vec(memWidth, Vec(nWays, BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))))
   for (i <- 0 until memWidth) {
     for (w <- 0 until nWays) {
       s2_data(i)(w) := data.io.resp(i)(w)

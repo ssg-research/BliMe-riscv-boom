@@ -571,6 +571,8 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
 
   uop.bypassable   := cs.bypassable
 
+  
+
   //-------------------------------------------------------------
   // immediates
 

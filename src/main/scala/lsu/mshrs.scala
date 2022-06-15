@@ -79,7 +79,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
 
     // Reading from the line buffer
     val lb_read       = Decoupled(new LineBufferReadReq)
-    val lb_resp       = Input(UInt(encRowBits.W))
+    val lb_resp       = Input(BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))
     val lb_write      = Decoupled(new LineBufferWriteReq)
 
     // Replays go through the cache pipeline again
@@ -481,7 +481,7 @@ class LineBufferReadReq(implicit p: Parameters) extends BoomBundle()(p)
 
 class LineBufferWriteReq(implicit p: Parameters) extends LineBufferReadReq()(p)
 {
-  val data   = UInt(encRowBits.W)
+  val data   = BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W))
 }
 
 class LineBufferMetaWriteReq(implicit p: Parameters) extends BoomBundle()(p)
@@ -565,14 +565,14 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
   // --------------------
   // The LineBuffer Data
   // Holds refilling lines, prefetched lines
-  val lb = Mem(nLBEntries * cacheDataBeats, UInt(encRowBits.W))
+  val lb = Mem(nLBEntries * cacheDataBeats, BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))
   val lb_read_arb  = Module(new Arbiter(new LineBufferReadReq, cfg.nMSHRs))
   val lb_write_arb = Module(new Arbiter(new LineBufferWriteReq, cfg.nMSHRs))
 
   lb_read_arb.io.out.ready  := false.B
   lb_write_arb.io.out.ready := true.B
 
-  val lb_read_data = WireInit(0.U(encRowBits.W))
+  val lb_read_data = BlindedMem(WireInit(0.U(encRowBits.W)), Bits((coreDataBytes*rowWords).W))
   when (lb_write_arb.io.out.fire) {
     lb.write(lb_write_arb.io.out.bits.lb_addr, lb_write_arb.io.out.bits.data)
   } .otherwise {

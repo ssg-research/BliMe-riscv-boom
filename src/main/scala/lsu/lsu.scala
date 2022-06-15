@@ -49,7 +49,7 @@ import chisel3.util._
 import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.rocket
 import freechips.rocketchip.tilelink._
-import freechips.rocketchip.util.Str
+import freechips.rocketchip.util.{Str, Blinded}
 
 import boom.common._
 import boom.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
@@ -68,14 +68,14 @@ class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomUOP
 {
   val addr  = UInt(coreMaxAddrBits.W)
-  val data  = Bits(coreDataBits.W)
+  val data  = Blinded(Bits(coreDataBits.W))
   val is_hella = Bool() // Is this the hellacache req? If so this is not tracked in LDQ or STQ
 }
 
 class BoomDCacheResp(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomUOP
 {
-  val data = Bits(coreDataBits.W)
+  val data = Blinded(Bits(coreDataBits.W))
   val is_hella = Bool()
 }
 
@@ -192,7 +192,7 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
 {
   val addr                = Valid(UInt(coreMaxAddrBits.W))
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
-  val data                = Valid(UInt(xLen.W))
+  val data                = Valid(Blinded(UInt(xLen.W)))
 
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
@@ -760,7 +760,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).valid := false.B
     dmem_req(w).bits.uop   := NullMicroOp
     dmem_req(w).bits.addr  := 0.U
-    dmem_req(w).bits.data  := 0.U
+    dmem_req(w).bits.data.bits  := 0.U
+    dmem_req(w).bits.data.blinded  := false.B
     dmem_req(w).bits.is_hella := false.B
 
     io.dmem.s1_kill(w) := false.B
@@ -782,10 +783,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     } .elsewhen (will_fire_store_commit(w)) {
       dmem_req(w).valid         := true.B
       dmem_req(w).bits.addr     := stq_commit_e.bits.addr.bits
-      dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
-                                    stq_commit_e.bits.uop.mem_size, 0.U,
-                                    stq_commit_e.bits.data.bits,
-                                    coreDataBytes)).data
+      dmem_req(w).bits.data.bits     := (new freechips.rocketchip.rocket.StoreGen(
+                                        stq_commit_e.bits.uop.mem_size, 0.U,
+                                        stq_commit_e.bits.data.bits.bits,
+                                        coreDataBytes)).data
+      dmem_req(w).bits.data.blinded  := stq_commit_e.bits.data.bits.blinded
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
 
       stq_execute_head                     := Mux(dmem_req_fire(w),
@@ -806,10 +808,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
       dmem_req(w).valid               := !io.hellacache.s1_kill && (!exe_tlb_miss(w) || hella_req.phys)
       dmem_req(w).bits.addr           := exe_tlb_paddr(w)
-      dmem_req(w).bits.data           := (new freechips.rocketchip.rocket.StoreGen(
+      dmem_req(w).bits.data.bits      := (new freechips.rocketchip.rocket.StoreGen(
         hella_req.size, 0.U,
-        io.hellacache.s1_data.data,
+        io.hellacache.s1_data.data.bits,
         coreDataBytes)).data
+      dmem_req(w).bits.data.blinded   := io.hellacache.s1_data.data.blinded
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
@@ -822,10 +825,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       assert(hella_state === h_replay)
       dmem_req(w).valid               := true.B
       dmem_req(w).bits.addr           := hella_paddr
-      dmem_req(w).bits.data           := (new freechips.rocketchip.rocket.StoreGen(
+      dmem_req(w).bits.data.bits      := (new freechips.rocketchip.rocket.StoreGen(
         hella_req.size, 0.U,
-        hella_data.data,
+        hella_data.data.bits,
         coreDataBytes)).data
+      dmem_req(w).bits.data.blinded   := hella_data.data.blinded
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
