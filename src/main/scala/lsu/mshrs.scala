@@ -225,7 +225,8 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
       io.lb_write.valid       := io.mem_grant.valid
       io.lb_write.bits.id     := io.id
       io.lb_write.bits.offset := refill_address_inc >> rowOffBits
-      io.lb_write.bits.data   := io.mem_grant.bits.data
+      io.lb_write.bits.data.bits        := io.mem_grant.bits.data(encRowBits-1, 0)
+      io.lb_write.bits.data.blindmask   := io.mem_grant.bits.data(encRowBits + coreDataBytes*rowWords - 1, encRowBits)
     } .otherwise {
       io.mem_grant.ready      := true.B
     }
@@ -250,10 +251,14 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
     val rp_addr = Cat(req_tag, req_idx, rpq.io.deq.bits.addr(blockOffBits-1,0))
     val word_idx  = if (rowWords == 1) 0.U else rp_addr(log2Up(rowWords*coreDataBytes)-1, log2Up(wordBytes))
     val data      = io.lb_resp
-    val data_word = data >> Cat(word_idx, 0.U(log2Up(coreDataBits).W))
+    val data_word = BlindedMem(data.bits      >> Cat(word_idx, 0.U(log2Up(coreDataBits).W)),
+                               data.blindmask >> Cat(word_idx, 0.U(log2Up(coreDataBits/8).W)))
     val loadgen = new LoadGen(rpq.io.deq.bits.uop.mem_size, rpq.io.deq.bits.uop.mem_signed,
       Cat(req_tag, req_idx, rpq.io.deq.bits.addr(blockOffBits-1,0)),
-      data_word, false.B, wordBytes)
+      Wire(data_word.bits), false.B, wordBytes)
+    val loadgen_blindmask = new LoadGen(rpq.io.deq.bits.uop.mem_size, rpq.io.deq.bits.uop.mem_signed,
+      Cat(req_tag, req_idx, rpq.io.deq.bits.addr(blockOffBits-1,0)),
+      FillInterleaved(8, Wire(data_word.blindmask)), false.B, wordBytes)
 
 
     rpq.io.deq.ready       := io.resp.ready && io.lb_read.ready && drain_load
@@ -263,7 +268,9 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
 
     io.resp.valid     := rpq.io.deq.valid && io.lb_read.fire && drain_load
     io.resp.bits.uop  := rpq.io.deq.bits.uop
-    io.resp.bits.data := loadgen.data
+    io.resp.bits.data.bits := loadgen.data
+    io.resp.bits.data.blinded := loadgen_blindmask.data(0)
+    assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
     io.resp.bits.is_hella := rpq.io.deq.bits.is_hella
     when (rpq.io.deq.fire) {
       commit_line   := true.B
@@ -402,25 +409,28 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
 
   def beatOffset(addr: UInt) = addr.extract(beatOffBits-1, wordOffBits)
 
-  def wordFromBeat(addr: UInt, dat: UInt) = {
+  def wordFromBeat(addr: UInt, dat: UInt) : BlindedMem[UInt,UInt] = {
     val shift = Cat(beatOffset(addr), 0.U((wordOffBits+log2Ceil(wordBytes)).W))
-    (dat >> shift)(wordBits-1, 0)
+    val wordData = (dat(beatBytes*8-1, 0) >> shift)(wordBits-1, 0)
+    val wordBlindmask = (dat(beatBytes*9-1, beatBytes*8) >> (shift >> 3))(wordBytes - 1, 0)
+    BlindedMem(wordData, wordBlindmask)
   }
 
   val req = Reg(new BoomDCacheReq)
-  val grant_word = Reg(UInt(wordBits.W))
+  val grant_word = Reg(BlindedMem(UInt(wordBits.W), UInt(wordBytes.W)))
 
   val s_idle :: s_mem_access :: s_mem_ack :: s_resp :: Nil = Enum(4)
 
   val state = RegInit(s_idle)
   io.req.ready := state === s_idle
 
-  val loadgen = new LoadGen(req.uop.mem_size, req.uop.mem_signed, req.addr, grant_word, false.B, wordBytes)
+  val loadgen = new LoadGen(req.uop.mem_size, req.uop.mem_signed, req.addr, grant_word.bits, false.B, wordBytes)
+  val loadgen_blindmask = new LoadGen(req.uop.mem_size, req.uop.mem_signed, req.addr, FillInterleaved(8, grant_word.blindmask), false.B, wordBytes)
 
   val a_source  = id.U
   val a_address = req.addr
   val a_size    = req.uop.mem_size
-  val a_data    = Fill(beatWords, req.data)
+  val a_data    = Cat(Fill(beatWords*coreDataBytes, req.data.blinded), Fill(beatWords, req.data.bits))
 
   val get      = edge.Get(a_source, a_address, a_size)._2
   val put      = edge.Put(a_source, a_address, a_size, a_data)._2
@@ -449,7 +459,9 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
 
   io.resp.valid     := (state === s_resp) && send_resp
   io.resp.bits.uop  := req.uop
-  io.resp.bits.data := loadgen.data
+  io.resp.bits.data.bits := loadgen.data
+  io.resp.bits.data.blinded := loadgen_blindmask.data(0)
+  assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
 
   when (io.req.fire) {
     req   := io.req.bits
@@ -461,7 +473,7 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
   when (state === s_mem_ack && io.mem_ack.valid) {
     state := s_resp
     when (isRead(req.uop.mem_cmd)) {
-      grant_word := wordFromBeat(req.addr, io.mem_ack.bits.data)
+      grant_word := Wire(wordFromBeat(req.addr, io.mem_ack.bits.data))
     }
   }
   when (state === s_resp) {
@@ -556,7 +568,7 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
   val sdq_alloc_id = PriorityEncoder(~sdq_val(cfg.nSDQ-1,0))
   val sdq_rdy      = !sdq_val.andR
   val sdq_enq      = req.fire && cacheable && isWrite(req.bits.uop.mem_cmd)
-  val sdq          = Mem(cfg.nSDQ, UInt(coreDataBits.W))
+  val sdq          = Mem(cfg.nSDQ, Blinded(UInt(coreDataBits.W)))
 
   when (sdq_enq) {
     sdq(sdq_alloc_id) := req.bits.data
@@ -572,7 +584,7 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
   lb_read_arb.io.out.ready  := false.B
   lb_write_arb.io.out.ready := true.B
 
-  val lb_read_data = BlindedMem(WireInit(0.U(encRowBits.W)), Bits((coreDataBytes*rowWords).W))
+  val lb_read_data = WireInit(Wire(BlindedMem(0.U(encRowBits.W), 0.U((coreDataBytes*rowWords).W))))
   when (lb_write_arb.io.out.fire) {
     lb.write(lb_write_arb.io.out.bits.lb_addr, lb_write_arb.io.out.bits.data)
   } .otherwise {

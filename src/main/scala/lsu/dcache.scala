@@ -294,7 +294,10 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
         val data = VecInit((0 until rowWords) map (i => Cat(io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i), io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i))))
         array.write(waddr, data, io.write.bits.wmask.asBools)
       }
-      io.resp(j)(w) := RegNext(array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt)
+      val readRow = array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid)
+      val readRowBits = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits-1, 0)))
+      val readRowMask = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits+coreDataBytes-1, 0)))
+      io.resp(j)(w) := RegNext(Wire(BlindedMem(readRowBits.asUInt, readRowMask.asUInt)))
     }
     io.nacks(j) := false.B
   }
@@ -352,13 +355,15 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
         desc = "Non-blocking DCache Data Array",
         size = bankSize,
         data = Vec(rowWords, Bits((encDataBits + coreDataBytes).W))
+        // data = Vec(rowWords, BlindedMem(Bits(encDataBits.W), Bits(coreDataBytes.W)))
       )
       val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
       val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.bits.way_en))
       s2_bank_reads(b) := array.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
 
       when (io.write.bits.way_en(w) && s0_bank_write_gnt(b)) {
-        val data = VecInit((0 until rowWords) map (i => io.write.bits.data(encDataBits*(i+1)-1,encDataBits*i)))
+        val data = VecInit((0 until rowWords) map (i => Cat(io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i), io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i))))
+        // val data = VecInit((0 until rowWords) map (i => BlindedMem(io.write.bits.data.bits(encData))))
         array.write(s0_widx, data, io.write.bits.wmask.asBools)
       }
     }
@@ -821,19 +826,33 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   io.lsu.perf.acquire := edge.done(tl_out.a)
 
   // load data gen
-  val s2_data_word_prebypass = widthMap(w => s2_data_muxed(w) >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)))
-  val s2_data_word = Wire(Vec(memWidth, UInt()))
+  val s2_data_word_prebypass = widthMap(w => Wire(BlindedMem(s2_data_muxed(w).bits       >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)), 
+                                                             s2_data_muxed(w).blindmask  >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits/8).W)))))
+  // for (w <- 0 until memWidth) {
+  //   assert(s2_data_word_prebypass(w).blindmask.orR === s2_data_word_prebypass(w).blindmask.andR)
+  // }
+  val s2_data_word = Wire(Vec(memWidth, BlindedMem(UInt(wordBits.W), UInt(wordBytes.W))))
 
-  val loadgen = (0 until memWidth).map { w =>
+  val loadgen_data = (0 until memWidth).map { w =>
     new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
-                s2_data_word(w), s2_sc && (w == 0).B, wordBytes)
+                s2_data_word(w).bits, s2_sc && (w == 0).B, wordBytes)
   }
+
+  val loadgen_blindmask = (0 until memWidth).map { w =>
+    new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
+                FillInterleaved(8, s2_data_word(w).blindmask), s2_sc && (w == 0).B, wordBytes)
+  }
+  for (w <- 0 until memWidth) {
+    assert(loadgen_blindmask(w).data.orR === loadgen_blindmask(w).data.andR) // all bits of loadgen_blindmask(w).data must be equal?
+  }
+
   // Mux between cache responses and uncache responses
   val cache_resp   = Wire(Vec(memWidth, Valid(new BoomDCacheResp)))
   for (w <- 0 until memWidth) {
     cache_resp(w).valid         := s2_valid(w) && s2_send_resp(w)
     cache_resp(w).bits.uop      := s2_req(w).uop
-    cache_resp(w).bits.data     := loadgen(w).data | s2_sc_fail
+    cache_resp(w).bits.data.bits     := loadgen_data(w).data | s2_sc_fail
+    cache_resp(w).bits.data.blinded  := loadgen_blindmask(w).data(0)
     cache_resp(w).bits.is_hella := s2_req(w).is_hella
   }
 
@@ -887,25 +906,27 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
 
   // Store -> Load bypassing
   for (w <- 0 until memWidth) {
-    s2_data_word(w) := Mux(s3_bypass(w), s3_req.data,
-                       Mux(s4_bypass(w), s4_req.data,
-                       Mux(s5_bypass(w), s5_req.data,
-                                         s2_data_word_prebypass(w))))
+    s2_data_word(w) := Mux(s3_bypass(w), Wire(BlindedMem(s3_req.data.bits, Fill(wordBytes, s3_req.data.blinded))),
+                       Mux(s4_bypass(w), Wire(BlindedMem(s4_req.data.bits, Fill(wordBytes, s4_req.data.blinded))),
+                       Mux(s5_bypass(w), Wire(BlindedMem(s5_req.data.bits, Fill(wordBytes, s5_req.data.blinded))),
+                                         Wire(BlindedMem(s2_data_word_prebypass(w).bits, s2_data_word_prebypass(w).blindmask)))))
   }
   val amoalu   = Module(new AMOALU(xLen))
   amoalu.io.mask := new StoreGen(s2_req(0).uop.mem_size, s2_req(0).addr, 0.U, xLen/8).mask
   amoalu.io.cmd  := s2_req(0).uop.mem_cmd
-  amoalu.io.lhs  := s2_data_word(0)
-  amoalu.io.rhs  := s2_req(0).data
+  amoalu.io.lhs  := s2_data_word(0).bits
+  amoalu.io.rhs  := s2_req(0).data.bits
 
 
-  s3_req.data := amoalu.io.out
+  s3_req.data.bits := amoalu.io.out
+  s3_req.data.blinded := s2_data_word(0).blindmask(wordBytes-1,0).orR || s2_req(0).data.blinded
   val s3_way   = RegNext(s2_tag_match_way(0))
 
   dataWriteArb.io.in(0).valid       := s3_valid
   dataWriteArb.io.in(0).bits.addr   := s3_req.addr
   dataWriteArb.io.in(0).bits.wmask  := UIntToOH(s3_req.addr.extract(rowOffBits-1,offsetlsb))
-  dataWriteArb.io.in(0).bits.data   := Fill(rowWords, s3_req.data)
+  dataWriteArb.io.in(0).bits.data.bits        := Fill(rowWords, s3_req.data.bits)
+  dataWriteArb.io.in(0).bits.data.blindmask   := Fill(rowWords*coreDataBytes, s3_req.data.blinded)
   dataWriteArb.io.in(0).bits.way_en := s3_way
 
 

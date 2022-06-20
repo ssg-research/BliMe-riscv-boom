@@ -448,19 +448,23 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 
   val r_val  = RegInit(VecInit(Seq.fill(numStages) { false.B }))
   val r_data = Reg(Vec(numStages, UInt(xLen.W)))
+  val r_blinded = Reg(Vec(numStages, Bool()))
   val r_pred = Reg(Vec(numStages, Bool()))
   val alu_out = Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
     Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
     Mux(io.req.bits.uop.uopc === uopMOV, io.req.bits.rs2_data, alu.io.out))
-  r_val (0) := io.req.valid
-  r_data(0) := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out) // TODO check how sfb optimization affects blindedness taint-tracking
-  r_pred(0) := io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data
+  r_val (0)     := io.req.valid
+  r_data(0)     := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out) // TODO check how sfb optimization affects blindedness taint-tracking
+  r_blinded(0)  := io.req.bits.blinded_result
+  r_pred(0)     := io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data
   for (i <- 1 until numStages) {
-    r_val(i)  := r_val(i-1)
-    r_data(i) := r_data(i-1)
-    r_pred(i) := r_pred(i-1)
+    r_val(i)      := r_val(i-1)
+    r_data(i)     := r_data(i-1)
+    r_blinded(i)  := r_blinded(i-1)
+    r_pred(i)     := r_pred(i-1)
   }
-  io.resp.bits.data := r_data(numStages-1)
+  io.resp.bits.data.bits := r_data(numStages-1)
+  io.resp.bits.data.blinded := r_blinded(numStages-1)
   io.resp.bits.predicated := r_pred(numStages-1)
   // Bypass
   // for the ALU, we can bypass same cycle as compute
@@ -468,9 +472,11 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   require (numBypassStages >= 1)
   io.bypass(0).valid := io.req.valid
   io.bypass(0).bits.data.bits := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
+  io.bypass(0).bits.data.blinded := io.req.bits.blinded_result
   for (i <- 1 until numStages) {
     io.bypass(i).valid := r_val(i-1)
     io.bypass(i).bits.data.bits := r_data(i-1)
+    io.bypass(i).bits.data.blinded := r_blinded(i-1)
   }
 
   // Exceptions
@@ -580,7 +586,7 @@ class FPUUnit(implicit p: Parameters)
   fpu.io.req.bits.rs3_data := io.req.bits.rs3_data
   fpu.io.req.bits.fcsr_rm  := io.fcsr_rm
 
-  io.resp.bits.data.bits         := fpu.io.resp.bits.data
+  io.resp.bits.data.bits         := fpu.io.resp.bits.data.bits // blinded flag is not passed through FPU
   io.resp.bits.fflags.valid      := fpu.io.resp.bits.fflags.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := fpu.io.resp.bits.fflags.bits.flags // kill me now
@@ -631,7 +637,7 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   val out_double = Pipe(io.req.valid, fp_ctrl.typeTagOut === D, intToFpLatency).bits
 
 //io.resp.bits.data              := box(ifpu.io.out.bits.data, !io.resp.bits.uop.fp_single)
-  io.resp.bits.data              := box(ifpu.io.out.bits.data, out_double)
+  io.resp.bits.data.bits         := box(ifpu.io.out.bits.data, out_double)
   io.resp.bits.fflags.valid      := ifpu.io.out.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := ifpu.io.out.bits.exc
@@ -699,7 +705,7 @@ class DivUnit(dataWidth: Int)(implicit p: Parameters)
   // response
   io.resp.valid       := div.io.resp.valid && !this.do_kill
   div.io.resp.ready   := io.resp.ready
-  io.resp.bits.data   := div.io.resp.bits.data
+  io.resp.bits.data.bits   := div.io.resp.bits.data
 }
 
 /**
@@ -724,5 +730,5 @@ class PipelinedMulUnit(numStages: Int, dataWidth: Int)(implicit p: Parameters)
   imul.io.req.bits.in2 := io.req.bits.rs2_data
   imul.io.req.bits.tag := DontCare
   // response
-  io.resp.bits.data    := imul.io.resp.bits.data
+  io.resp.bits.data.bits    := imul.io.resp.bits.data
 }

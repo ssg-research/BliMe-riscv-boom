@@ -141,11 +141,11 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   // How many bits do we intend to fetch at most every cycle?
   val wordBits = outer.icacheParams.fetchBytes*8
   // Each of these cases require some special-case handling.
-  require (tl_out.d.bits.data.getWidth == wordBits || (2*tl_out.d.bits.data.getWidth == wordBits && nBanks == 2))
+  require (tl_out.d.bits.data.getWidth == (wordBits+wordBits/8) || (2*tl_out.d.bits.data.getWidth == (wordBits+wordBits/8) && nBanks == 2))
   // If TL refill is half the wordBits size and we have two banks, then the
   // refill writes to only one bank per cycle (instead of across two banks every
   // cycle).
-  val refillsToOneBank = (2*tl_out.d.bits.data.getWidth == wordBits)
+  val refillsToOneBank = (2*tl_out.d.bits.data.getWidth == (wordBits+wordBits/8))
 
 
 

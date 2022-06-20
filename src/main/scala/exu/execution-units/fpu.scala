@@ -242,7 +242,7 @@ class FPU(implicit p: Parameters) extends BoomModule with tile.HasFPUParameters
     Mux(fpiu_out.valid,    fpiu_result.exc,
                            fpmu.io.out.bits.exc)))
 
-  io.resp.bits.data              := fpu_out_data
+  io.resp.bits.data.bits         := fpu_out_data
   io.resp.bits.fflags.valid      := io.resp.valid
   io.resp.bits.fflags.bits.flags := fpu_out_exc
 }

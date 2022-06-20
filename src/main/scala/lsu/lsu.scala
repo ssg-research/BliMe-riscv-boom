@@ -812,7 +812,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         hella_req.size, 0.U,
         io.hellacache.s1_data.data.bits,
         coreDataBytes)).data
-      dmem_req(w).bits.data.blinded   := io.hellacache.s1_data.data.blinded
+      val storegen_blindmask = new freechips.rocketchip.rocket.StoreGen(
+        hella_req.size, 0.U,
+        FillInterleaved(8, io.hellacache.s1_data.data.blindmask),
+        coreDataBytes)
+      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
+      dmem_req(w).bits.data.blinded   := storegen_blindmask.data(0)
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
@@ -829,7 +834,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         hella_req.size, 0.U,
         hella_data.data.bits,
         coreDataBytes)).data
-      dmem_req(w).bits.data.blinded   := hella_data.data.blinded
+      val storegen_blindmask = new freechips.rocketchip.rocket.StoreGen(
+        hella_req.size, 0.U,
+        FillInterleaved(8, hella_data.data.blindmask),
+        coreDataBytes)
+      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
+      dmem_req(w).bits.data.blinded   := storegen_blindmask.data(0)
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
@@ -1359,18 +1369,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val live        = !IsKilledByBranch(io.core.brupdate, forward_uop)
       val storegen = new freechips.rocketchip.rocket.StoreGen(
                                 stq_e.bits.uop.mem_size, stq_e.bits.addr.bits,
-                                stq_e.bits.data.bits, coreDataBytes)
+                                stq_e.bits.data.bits.bits, coreDataBytes)
+      val storegen_blindmask = new freechips.rocketchip.rocket.StoreGen(
+                                stq_e.bits.uop.mem_size, stq_e.bits.addr.bits,
+                                Fill(xLen, stq_e.bits.data.bits.blinded), coreDataBytes)
+      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
       val loadgen  = new freechips.rocketchip.rocket.LoadGen(
                                 forward_uop.mem_size, forward_uop.mem_signed,
                                 wb_forward_ld_addr(w),
                                 storegen.data, false.B, coreDataBytes)
+      val loadgen_blindmask  = new freechips.rocketchip.rocket.LoadGen(
+                                forward_uop.mem_size, forward_uop.mem_signed,
+                                wb_forward_ld_addr(w),
+                                storegen_blindmask.data, false.B, coreDataBytes)
+      assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
 
       io.core.exe(w).iresp.valid := (forward_uop.dst_rtype === RT_FIX) && data_ready && live
       io.core.exe(w).fresp.valid := (forward_uop.dst_rtype === RT_FLT) && data_ready && live
       io.core.exe(w).iresp.bits.uop  := forward_uop
       io.core.exe(w).fresp.bits.uop  := forward_uop
-      io.core.exe(w).iresp.bits.data := loadgen.data
-      io.core.exe(w).fresp.bits.data := loadgen.data
+      io.core.exe(w).iresp.bits.data.bits     := loadgen.data
+      io.core.exe(w).iresp.bits.data.blinded  := loadgen_blindmask.data(0)
+      io.core.exe(w).fresp.bits.data.bits     := loadgen.data
+      io.core.exe(w).fresp.bits.data.blinded  := loadgen_blindmask.data(0)
 
       when (data_ready && live) {
         ldq(f_idx).bits.succeeded := data_ready
@@ -1478,7 +1499,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (commit_store || commit_load) {
         val uop    = Mux(commit_store, stq(idx).bits.uop, ldq(idx).bits.uop)
         val addr   = Mux(commit_store, stq(idx).bits.addr.bits, ldq(idx).bits.addr.bits)
-        val stdata = Mux(commit_store, stq(idx).bits.data.bits, 0.U)
+        val stdata = Mux(commit_store, stq(idx).bits.data.bits.bits, 0.U)
         val wbdata = Mux(commit_store, stq(idx).bits.debug_wb_data, ldq(idx).bits.debug_wb_data)
         printf("MT %x %x %x %x %x %x %x\n",
           io.core.tsc_reg, uop.uopc, uop.mem_cmd, uop.mem_size, addr, stdata, wbdata)
