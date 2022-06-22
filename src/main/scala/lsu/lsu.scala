@@ -1338,7 +1338,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dmem_resp_fired(w) := true.B
 
         ldq(ldq_idx).bits.succeeded      := io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid
-        ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data
+        ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data.bits
       }
         .elsewhen (io.dmem.resp(w).bits.uop.uses_stq)
       {
@@ -1350,7 +1350,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           io.core.exe(w).iresp.bits.uop  := stq(io.dmem.resp(w).bits.uop.stq_idx).bits.uop
           io.core.exe(w).iresp.bits.data := io.dmem.resp(w).bits.data
 
-          stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data
+          stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data.bits
         }
       }
     }
@@ -1595,7 +1595,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         io.hellacache.resp.bits.cmd    := hella_req.cmd
         io.hellacache.resp.bits.signed := hella_req.signed
         io.hellacache.resp.bits.size   := hella_req.size
-        io.hellacache.resp.bits.data   := io.dmem.resp(w).bits.data
+        io.hellacache.resp.bits.data.bits         := io.dmem.resp(w).bits.data.bits
+        io.hellacache.resp.bits.data.blindmask    := Fill(coreDataBytes, io.dmem.resp(w).bits.data.blinded)
       } .elsewhen (io.dmem.nack(w).valid && io.dmem.nack(w).bits.is_hella) {
         hella_state := h_replay
       }

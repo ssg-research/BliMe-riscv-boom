@@ -353,12 +353,15 @@ class ALUExeUnit(
   var ifpu: IntToFPUnit = null
   if (hasIfpu) {
     ifpu = Module(new IntToFPUnit(latency=intToFpLatency))
-    ifpu.io.req        <> io.req
-    ifpu.io.req.valid  := io.req.valid && io.req.bits.uop.fu_code_is(FU_I2F)
-    ifpu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
-    ifpu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
-    ifpu.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
+    // ifpu.io.req        <> io.req
+    ifpu.io.req.valid               := io.req.valid && io.req.bits.uop.fu_code_is(FU_I2F)
+    ifpu.io.req.bits.rs1_data       := io.req.bits.rs1_data.bits
+    ifpu.io.req.bits.rs2_data       := io.req.bits.rs2_data.bits
+    ifpu.io.req.bits.rs3_data       := io.req.bits.rs3_data.bits
     ifpu.io.req.bits.blinded_result := blinded_result
+    ifpu.io.req.bits.kill           := io.req.bits.kill
+    ifpu.io.req.bits.uop            := io.req.bits.uop
+    ifpu.io.req.bits.pred_data      := io.req.bits.pred_data
     ifpu.io.fcsr_rm    := io.fcsr_rm
     ifpu.io.brupdate   <> io.brupdate
     ifpu.io.resp.ready := DontCare
@@ -407,12 +410,15 @@ class ALUExeUnit(
   if (hasMem) {
     require(!hasAlu)
     val maddrcalc = Module(new MemAddrCalcUnit)
-    maddrcalc.io.req        <> io.req
-    maddrcalc.io.req.valid  := io.req.valid && io.req.bits.uop.fu_code_is(FU_MEM)
-    maddrcalc.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
-    maddrcalc.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
-    maddrcalc.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
-    maddrcalc.io.req.bits.blinded_result := blinded_result
+    // maddrcalc.io.req        <> io.req
+    maddrcalc.io.req.valid                := io.req.valid && io.req.bits.uop.fu_code_is(FU_MEM)
+    maddrcalc.io.req.bits.rs1_data        := io.req.bits.rs1_data.bits
+    maddrcalc.io.req.bits.rs2_data        := io.req.bits.rs2_data.bits
+    maddrcalc.io.req.bits.rs3_data        := io.req.bits.rs3_data.bits
+    maddrcalc.io.req.bits.blinded_result  := blinded_result
+    maddrcalc.io.req.bits.kill            := io.req.bits.kill
+    maddrcalc.io.req.bits.uop             := io.req.bits.uop
+    maddrcalc.io.req.bits.pred_data       := io.req.bits.pred_data
     maddrcalc.io.brupdate     <> io.brupdate
     maddrcalc.io.status     := io.status
     maddrcalc.io.bp         := io.bp

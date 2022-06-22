@@ -297,7 +297,10 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
       val readRow = array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid)
       val readRowBits = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits-1, 0)))
       val readRowMask = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits+coreDataBytes-1, 0)))
-      io.resp(j)(w) := RegNext(Wire(BlindedMem(readRowBits.asUInt, readRowMask.asUInt)))
+      val readRow_wire = Wire(BlindedMem(UInt(), UInt()))
+      readRow_wire.bits := readRowBits.asUInt
+      readRow_wire.blindmask := readRowMask.asUInt
+      io.resp(j)(w) := RegNext(readRow_wire)
     }
     io.nacks(j) := false.B
   }
@@ -826,8 +829,11 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   io.lsu.perf.acquire := edge.done(tl_out.a)
 
   // load data gen
-  val s2_data_word_prebypass = widthMap(w => Wire(BlindedMem(s2_data_muxed(w).bits       >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)), 
-                                                             s2_data_muxed(w).blindmask  >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits/8).W)))))
+  val s2_data_word_prebypass = Wire(Vec(memWidth, BlindedMem(UInt(), UInt())))
+  for (w <- 0 until memWidth) {
+    s2_data_word_prebypass(w).bits       := (s2_data_muxed(w).bits       >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)))
+    s2_data_word_prebypass(w).blindmask  := (s2_data_muxed(w).blindmask  >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits/8).W)))
+  }
   // for (w <- 0 until memWidth) {
   //   assert(s2_data_word_prebypass(w).blindmask.orR === s2_data_word_prebypass(w).blindmask.andR)
   // }
@@ -904,12 +910,22 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val s4_bypass = widthMap(w => s4_valid && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
   val s5_bypass = widthMap(w => s5_valid && ((s2_req(w).addr >> wordOffBits) === (s5_req.addr >> wordOffBits)))
 
+  val s3_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  s3_req_blindmem.bits := s3_req.data.bits
+  s3_req_blindmem.blindmask := Fill(wordBytes, s3_req.data.blinded)
+  val s4_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  s4_req_blindmem.bits := s4_req.data.bits
+  s4_req_blindmem.blindmask := Fill(wordBytes, s4_req.data.blinded)
+  val s5_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  s5_req_blindmem.bits := s5_req.data.bits
+  s5_req_blindmem.blindmask := Fill(wordBytes, s5_req.data.blinded)
+
   // Store -> Load bypassing
   for (w <- 0 until memWidth) {
-    s2_data_word(w) := Mux(s3_bypass(w), Wire(BlindedMem(s3_req.data.bits, Fill(wordBytes, s3_req.data.blinded))),
-                       Mux(s4_bypass(w), Wire(BlindedMem(s4_req.data.bits, Fill(wordBytes, s4_req.data.blinded))),
-                       Mux(s5_bypass(w), Wire(BlindedMem(s5_req.data.bits, Fill(wordBytes, s5_req.data.blinded))),
-                                         Wire(BlindedMem(s2_data_word_prebypass(w).bits, s2_data_word_prebypass(w).blindmask)))))
+    s2_data_word(w) := Mux(s3_bypass(w), s3_req_blindmem,
+                       Mux(s4_bypass(w), s4_req_blindmem,
+                       Mux(s5_bypass(w), s5_req_blindmem,
+                                         s2_data_word_prebypass(w))))
   }
   val amoalu   = Module(new AMOALU(xLen))
   amoalu.io.mask := new StoreGen(s2_req(0).uop.mem_size, s2_req(0).addr, 0.U, xLen/8).mask

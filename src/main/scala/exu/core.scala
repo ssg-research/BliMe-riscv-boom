@@ -36,7 +36,7 @@ import chisel3.util._
 import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
 import freechips.rocketchip.rocket.{Causes, PRV}
-import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle}
+import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle, Blinded}
 import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
 
 import testchipip.{ExtendedTracedInstruction}
@@ -993,7 +993,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
 
   // for critical path reasons, we aren't zero'ing this out if resp is not valid
   val csr_rw_cmd = csr_exe_unit.io.iresp.bits.uop.ctrl.csr_cmd
-  val wb_wdata = csr_exe_unit.io.iresp.bits.data
+  val wb_wdata = csr_exe_unit.io.iresp.bits.data.bits
 
   csr.io.rw.addr        := csr_exe_unit.io.iresp.bits.uop.csr_addr
   csr.io.rw.cmd         := freechips.rocketchip.rocket.CSR.maskCmd(csr_exe_unit.io.iresp.valid, csr_rw_cmd)
@@ -1144,6 +1144,8 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
       val wbresp = exe_units(i).io.iresp
       val wbpdst = wbresp.bits.uop.pdst
       val wbdata = wbresp.bits.data
+      val wbdata_wire = Wire(Blinded(Bits(xLen.W)))
+      wbdata_wire := wbdata
 
       def wbIsValid(rtype: UInt) =
         wbresp.valid && wbresp.bits.uop.rf_wen && wbresp.bits.uop.dst_rtype === rtype
@@ -1153,9 +1155,10 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
       iregfile.io.write_ports(w_cnt).bits.addr := wbpdst
       wbresp.ready := true.B
       if (exe_units(i).hasCSR) {
-        iregfile.io.write_ports(w_cnt).bits.data := Mux(wbReadsCSR, csr.io.rw.rdata, wbdata)
+        iregfile.io.write_ports(w_cnt).bits.data.bits := Mux(wbReadsCSR, csr.io.rw.rdata, wbdata_wire.bits)
+        iregfile.io.write_ports(w_cnt).bits.data.blinded := Mux(wbReadsCSR, false.B, wbdata_wire.blinded)
       } else {
-        iregfile.io.write_ports(w_cnt).bits.data := wbdata
+        iregfile.io.write_ports(w_cnt).bits.data := wbdata_wire
       }
 
       assert (!wbIsValid(RT_FLT), "[fppipeline] An FP writeback is being attempted to the Int Regfile.")
@@ -1206,14 +1209,14 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   rob.io.wb_resps(0).valid  := ll_wbarb.io.out.valid && !(ll_uop.uses_stq && !ll_uop.is_amo)
   rob.io.wb_resps(0).bits   <> ll_wbarb.io.out.bits
   rob.io.debug_wb_valids(0) := ll_wbarb.io.out.valid && ll_uop.dst_rtype =/= RT_X
-  rob.io.debug_wb_wdata(0)  := ll_wbarb.io.out.bits.data
+  rob.io.debug_wb_wdata(0)  := ll_wbarb.io.out.bits.data.bits
   var cnt = 1
   for (i <- 1 until memWidth) {
     val mem_uop = mem_resps(i).bits.uop
     rob.io.wb_resps(cnt).valid := mem_resps(i).valid && !(mem_uop.uses_stq && !mem_uop.is_amo)
     rob.io.wb_resps(cnt).bits  := mem_resps(i).bits
     rob.io.debug_wb_valids(cnt) := mem_resps(i).valid && mem_uop.dst_rtype =/= RT_X
-    rob.io.debug_wb_wdata(cnt)  := mem_resps(i).bits.data
+    rob.io.debug_wb_wdata(cnt)  := mem_resps(i).bits.data.bits
     cnt += 1
   }
   var f_cnt = 0 // rob fflags port index
@@ -1234,9 +1237,9 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
       if (eu.hasCSR) {
         rob.io.debug_wb_wdata(cnt) := Mux(wb_uop.ctrl.csr_cmd =/= freechips.rocketchip.rocket.CSR.N,
           csr.io.rw.rdata,
-          data)
+          data.bits)
       } else {
-        rob.io.debug_wb_wdata(cnt) := data
+        rob.io.debug_wb_wdata(cnt) := data.bits
       }
       cnt += 1
     }

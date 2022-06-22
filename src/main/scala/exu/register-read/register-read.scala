@@ -122,11 +122,24 @@ class RegisterRead(
 
     if (enableSFBOpt) io.prf_read_ports(w).addr := pred_addr
 
-    if (numReadPorts > 0) rrd_rs1_data(w) := Mux(RegNext(rs1_addr === 0.U), 0.U, io.rf_read_ports(idx+0).data)
-    if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
-    if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+2).data)
+    // val rf_read_ports_data = Wire(Blinded(UInt(registerWidth.W)))
 
-    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(io.iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, Blinded(false.B))
+    // if (numReadPorts > 0) rf_read_ports_data := io.rf_read_ports(idx+0).data
+    // if (numReadPorts > 1) rf_read_ports_data := io.rf_read_ports(idx+1).data
+    // if (numReadPorts > 2) rf_read_ports_data := io.rf_read_ports(idx+2).data
+
+    val blinded_zero_wire = Wire(Blinded(UInt(registerWidth.W)))
+    blinded_zero_wire.bits := 0.U(registerWidth.W)
+    blinded_zero_wire.blinded := false.B
+    val blinded_false_wire = Wire(Blinded(Bool()))
+    blinded_false_wire.bits := false.B
+    blinded_false_wire.blinded := false.B
+
+    if (numReadPorts > 0) rrd_rs1_data(w) := Mux(RegNext(rs1_addr === 0.U), blinded_zero_wire, io.rf_read_ports(idx+0).data)
+    if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), blinded_zero_wire, io.rf_read_ports(idx+1).data)
+    if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), blinded_zero_wire, io.rf_read_ports(idx+2).data)
+
+    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(io.iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, blinded_false_wire)
 
     val rrd_kill = io.kill || IsKilledByBranch(io.brupdate, rrd_uops(w))
 
@@ -155,11 +168,18 @@ class RegisterRead(
   val bypassed_pred_data = Wire(Vec(issueWidth, Blinded(Bool())))
   bypassed_pred_data := DontCare
 
+  val blinded_zero_wire = Wire(Blinded(UInt(registerWidth.W)))
+  blinded_zero_wire.bits := 0.U(registerWidth.W)
+  blinded_zero_wire.blinded := false.B
+  val blinded_false_wire = Wire(Blinded(UInt(1.W)))
+  blinded_false_wire.bits := 0.U(1.W)
+  blinded_false_wire.blinded := false.B
+
   for (w <- 0 until issueWidth) {
     val numReadPorts = numReadPortsArray(w)
-    var rs1_cases = Array((false.B, Blinded(0.U(registerWidth.W))))
-    var rs2_cases = Array((false.B, Blinded(0.U(registerWidth.W))))
-    var pred_cases = Array((false.B, Blinded(0.U(1.W))))
+    var rs1_cases = Array((false.B, blinded_zero_wire))
+    var rs2_cases = Array((false.B, blinded_zero_wire))
+    var pred_cases = Array((false.B, blinded_false_wire))
 
     val prs1       = rrd_uops(w).prs1
     val lrs1_rtype = rrd_uops(w).lrs1_rtype

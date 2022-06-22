@@ -17,6 +17,7 @@ import chisel3.util._
 import freechips.rocketchip.config.{Parameters}
 import freechips.rocketchip.rocket
 import freechips.rocketchip.tile
+import freechips.rocketchip.util.{Blinded}
 
 import boom.exu.FUConstants._
 import boom.common._
@@ -143,7 +144,10 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   // Register Read <- Issue (rrd <- iss)
   fregister_read.io.rf_read_ports <> fregfile.io.read_ports
-  fregister_read.io.prf_read_ports map { port => port.data := false.B }
+  fregister_read.io.prf_read_ports map { port => 
+    port.data.bits := false.B
+    port.data.blinded := false.B
+  }
 
   fregister_read.io.iss_valids <> iss_valids
   fregister_read.io.iss_uops := iss_uops

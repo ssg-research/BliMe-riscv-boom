@@ -215,7 +215,7 @@ class FDivSqrtUnit(implicit p: Parameters)
 
   io.resp.valid := r_out_val && !IsKilledByBranch(io.brupdate, r_out_uop)
   io.resp.bits.uop := r_out_uop
-  io.resp.bits.data :=
+  io.resp.bits.data.bits :=
     Mux(r_divsqrt_fin.typeTagIn === S,
       box(downvert_d2s.io.out, false.B),
       box(r_out_wdata_double, true.B))
