@@ -816,7 +816,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         hella_req.size, 0.U,
         FillInterleaved(8, io.hellacache.s1_data.data.blindmask),
         coreDataBytes)
-      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
+      assert(storegen_blindmask.data(7,0).orR === storegen_blindmask.data(7,0).andR) // all bits of storegen_blindmask.data must be equal?
       dmem_req(w).bits.data.blinded   := storegen_blindmask.data(0)
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
@@ -838,7 +838,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         hella_req.size, 0.U,
         FillInterleaved(8, hella_data.data.blindmask),
         coreDataBytes)
-      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
+      assert(storegen_blindmask.data(7,0).orR === storegen_blindmask.data(7,0).andR) // all bits of storegen_blindmask.data must be equal?
       dmem_req(w).bits.data.blinded   := storegen_blindmask.data(0)
       dmem_req(w).bits.uop.mem_cmd    := hella_req.cmd
       dmem_req(w).bits.uop.mem_size   := hella_req.size
@@ -1373,7 +1373,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val storegen_blindmask = new freechips.rocketchip.rocket.StoreGen(
                                 stq_e.bits.uop.mem_size, stq_e.bits.addr.bits,
                                 Fill(xLen, stq_e.bits.data.bits.blinded), coreDataBytes)
-      assert(storegen_blindmask.data.orR === storegen_blindmask.data.andR) // all bits of storegen_blindmask.data must be equal?
+      assert(storegen_blindmask.data(7,0).orR === storegen_blindmask.data(7,0).andR) // all bits of storegen_blindmask.data must be equal?
       val loadgen  = new freechips.rocketchip.rocket.LoadGen(
                                 forward_uop.mem_size, forward_uop.mem_signed,
                                 wb_forward_ld_addr(w),
@@ -1382,7 +1382,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 forward_uop.mem_size, forward_uop.mem_signed,
                                 wb_forward_ld_addr(w),
                                 storegen_blindmask.data, false.B, coreDataBytes)
-      assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
+      assert(loadgen_blindmask.data(7,0).orR === loadgen_blindmask.data(7,0).andR) // all bits of loadgen_blindmask.data must be equal?
 
       io.core.exe(w).iresp.valid := (forward_uop.dst_rtype === RT_FIX) && data_ready && live
       io.core.exe(w).fresp.valid := (forward_uop.dst_rtype === RT_FLT) && data_ready && live

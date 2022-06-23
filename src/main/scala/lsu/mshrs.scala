@@ -271,7 +271,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
     io.resp.bits.uop  := rpq.io.deq.bits.uop
     io.resp.bits.data.bits := loadgen.data
     io.resp.bits.data.blinded := loadgen_blindmask.data(0)
-    assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
+    assert(loadgen_blindmask.data(7,0).orR === loadgen_blindmask.data(7,0).andR) // all bits of loadgen_blindmask.data must be equal?
     io.resp.bits.is_hella := rpq.io.deq.bits.is_hella
     when (rpq.io.deq.fire) {
       commit_line   := true.B
@@ -465,7 +465,7 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
   io.resp.bits.uop  := req.uop
   io.resp.bits.data.bits := loadgen.data
   io.resp.bits.data.blinded := loadgen_blindmask.data(0)
-  assert(loadgen_blindmask.data.orR === loadgen_blindmask.data.andR) // all bits of loadgen_blindmask.data must be equal?
+  assert(loadgen_blindmask.data(7,0).orR === loadgen_blindmask.data(7,0).andR) // all bits of loadgen_blindmask.data must be equal?
 
   // val grant_word_tmp = Wire(BlindedMem(UInt(wordBits.W), UInt(wordBytes.W)))
   // grant_word_tmp := wordFromBeat(req.addr, io.mem_ack.bits.data)

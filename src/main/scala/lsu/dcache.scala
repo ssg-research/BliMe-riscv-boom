@@ -849,7 +849,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
                 FillInterleaved(8, s2_data_word(w).blindmask), s2_sc && (w == 0).B, wordBytes)
   }
   for (w <- 0 until memWidth) {
-    assert(loadgen_blindmask(w).data.orR === loadgen_blindmask(w).data.andR) // all bits of loadgen_blindmask(w).data must be equal?
+    assert(loadgen_blindmask(w).data(7,0).orR === loadgen_blindmask(w).data(7,0).andR) // all bits of loadgen_blindmask(w).data must be equal?
   }
 
   // Mux between cache responses and uncache responses
