@@ -284,22 +284,32 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
 
     val raddr = io.read(j).bits.addr >> rowOffBits
     for (w <- 0 until nWays) {
-      val (array, omSRAM) = DescribedSRAM(
-        name = s"array_${w}_${j}",
+      val (dataArray, dataOmSRAM) = DescribedSRAM(
+        name = s"dataArray_${w}_${j}",
         desc = "Non-blocking DCache Data Array",
         size = nSets * refillCycles,
-        data = Vec(rowWords, Bits((encDataBits + coreDataBytes).W))
+        data = Vec(rowWords, Bits(encDataBits.W))
+      )
+      val (blindmaskArray, bmOmSRAM) = DescribedSRAM(
+        name = s"blindmaskArray_${w}_${j}",
+        desc = "Non-blocking DCache Data Array",
+        size = nSets * refillCycles,
+        data = Vec(rowWords, Bits(coreDataBytes.W))
       )
       when (io.write.bits.way_en(w) && io.write.valid) {
-        val data = VecInit((0 until rowWords) map (i => Cat(io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i), io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i))))
-        array.write(waddr, data, io.write.bits.wmask.asBools)
+        val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
+        val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
+        when (!io.write.bits.blindedOnly) {
+          dataArray.write(waddr, data, io.write.bits.wmask.asBools)
+        }
+        blindmaskArray.write(waddr, blindmask, io.write.bits.wmask.asBools)
       }
-      val readRow = array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid)
-      val readRowBits = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits-1, 0)))
-      val readRowMask = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits+coreDataBytes-1, 0)))
-      val readRow_wire = Wire(BlindedMem(UInt(), UInt()))
-      readRow_wire.bits := readRowBits.asUInt
-      readRow_wire.blindmask := readRowMask.asUInt
+      // val readRow = array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid)
+      // val readRowBits = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits-1, 0)))
+      // val readRowMask = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits+coreDataBytes-1, encDataBits)))
+      val readRow_wire = Wire(BlindedMem(UInt(encDataBits.W), UInt(coreDataBytes.W)))
+      readRow_wire.bits := dataArray.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt
+      readRow_wire.blindmask := blindmaskArray.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt
       io.resp(j)(w) := RegNext(readRow_wire)
     }
     io.nacks(j) := false.B
@@ -353,21 +363,31 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
     val s2_bank_reads = Reg(Vec(nBanks, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
 
     for (b <- 0 until nBanks) {
-      val (array, omSRAM) = DescribedSRAM(
-        name = s"array_${w}_${b}",
+      val (dataArray, dataOmSRAM) = DescribedSRAM(
+        name = s"dataArray_${w}_${b}",
         desc = "Non-blocking DCache Data Array",
         size = bankSize,
-        data = Vec(rowWords, Bits((encDataBits + coreDataBytes).W))
-        // data = Vec(rowWords, BlindedMem(Bits(encDataBits.W), Bits(coreDataBytes.W)))
+        data = Vec(rowWords, Bits(encDataBits.W))
+      )
+      val (blindmaskArray, bmOmSRAM) = DescribedSRAM(
+        name = s"blindmaskArray_${w}_${b}",
+        desc = "Non-blocking DCache Data Array",
+        size = bankSize,
+        data = Vec(rowWords, Bits(coreDataBytes.W))
       )
       val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
       val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.bits.way_en))
-      s2_bank_reads(b) := array.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
+      s2_bank_reads(b).bits := dataArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
+      s2_bank_reads(b).blindmask := blindmaskArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
 
       when (io.write.bits.way_en(w) && s0_bank_write_gnt(b)) {
-        val data = VecInit((0 until rowWords) map (i => Cat(io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i), io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i))))
+        val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
+        val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
         // val data = VecInit((0 until rowWords) map (i => BlindedMem(io.write.bits.data.bits(encData))))
-        array.write(s0_widx, data, io.write.bits.wmask.asBools)
+        when (!io.write.bits.blindedOnly) {
+          dataArray.write(s0_widx, data, io.write.bits.wmask.asBools)
+        }
+        blindmaskArray.write(s0_widx, blindmask, io.write.bits.wmask.asBools)
       }
     }
 
@@ -906,9 +926,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val s5_req   = RegNext(s4_req)
   val s5_valid = RegNext(s4_valid)
 
-  val s3_bypass = widthMap(w => s3_valid && ((s2_req(w).addr >> wordOffBits) === (s3_req.addr >> wordOffBits)))
-  val s4_bypass = widthMap(w => s4_valid && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
-  val s5_bypass = widthMap(w => s5_valid && ((s2_req(w).addr >> wordOffBits) === (s5_req.addr >> wordOffBits)))
+  val s3_bypass = widthMap(w => s3_valid && !s3_req.blindedOnly && ((s2_req(w).addr >> wordOffBits) === (s3_req.addr >> wordOffBits)))
+  val s4_bypass = widthMap(w => s4_valid && !s4_req.blindedOnly && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
+  val s5_bypass = widthMap(w => s5_valid && !s5_req.blindedOnly && ((s2_req(w).addr >> wordOffBits) === (s5_req.addr >> wordOffBits)))
 
   val s3_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
   s3_req_blindmem.bits := s3_req.data.bits
@@ -943,6 +963,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   dataWriteArb.io.in(0).bits.wmask  := UIntToOH(s3_req.addr.extract(rowOffBits-1,offsetlsb))
   dataWriteArb.io.in(0).bits.data.bits        := Fill(rowWords, s3_req.data.bits)
   dataWriteArb.io.in(0).bits.data.blindmask   := Fill(rowWords*coreDataBytes, s3_req.data.blinded)
+  dataWriteArb.io.in(0).bits.blindedOnly      := s3_req.blindedOnly
   dataWriteArb.io.in(0).bits.way_en := s3_way
 
 

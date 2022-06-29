@@ -89,11 +89,11 @@ class FuncUnitReq(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 {
   val numOperands = 3
 
-  val rs1_data = UInt(dataWidth.W)
-  val rs2_data = UInt(dataWidth.W)
-  val rs3_data = UInt(dataWidth.W) // only used for FMA units
+  val rs1_data = Blinded(UInt(dataWidth.W))
+  val rs2_data = Blinded(UInt(dataWidth.W))
+  val rs3_data = Blinded(UInt(dataWidth.W)) // only used for FMA units
   val pred_data = Bool()
-  val blinded_result = Bool() // set by execution unit before entry into functional unit; used to set blindedness of response (and bypasses)
+  // val blinded_result = Bool() // set by execution unit before entry into functional unit; used to set blindedness of response (and bypasses)
 
   val kill = Bool() // kill everything
 }
@@ -188,6 +188,9 @@ abstract class FunctionalUnit(
     val mcontext = if (isMemAddrCalcUnit) Input(UInt(coreParams.mcontextWidth.W)) else null
     val scontext = if (isMemAddrCalcUnit) Input(UInt(coreParams.scontextWidth.W)) else null
 
+    // blinded exception output
+    val blinded_xcpt = Output(Valid(new Exception))
+
   })
 }
 
@@ -228,24 +231,24 @@ abstract class PipelinedFunctionalUnit(
   if (numStages > 0) {
     val r_valids = RegInit(VecInit(Seq.fill(numStages) { false.B }))
     val r_uops   = Reg(Vec(numStages, new MicroOp()))
-    val r_blinded = RegInit(VecInit(Seq.fill(numStages) { false.B }))
+    // val r_blinded = RegInit(VecInit(Seq.fill(numStages) { false.B }))
 
     // handle incoming request
     r_valids(0) := io.req.valid && !IsKilledByBranch(io.brupdate, io.req.bits.uop) && !io.req.bits.kill
     r_uops(0)   := io.req.bits.uop
     r_uops(0).br_mask := GetNewBrMask(io.brupdate, io.req.bits.uop)
-    r_blinded(0) := io.req.bits.blinded_result
+    // r_blinded(0) := io.req.bits.blinded_result
 
     // handle middle of the pipeline
     for (i <- 1 until numStages) {
       r_valids(i) := r_valids(i-1) && !IsKilledByBranch(io.brupdate, r_uops(i-1)) && !io.req.bits.kill
       r_uops(i)   := r_uops(i-1)
       r_uops(i).br_mask := GetNewBrMask(io.brupdate, r_uops(i-1))
-      r_blinded(i) := r_blinded(i-1)
+      // r_blinded(i) := r_blinded(i-1)
 
       if (numBypassStages > 0) {
         io.bypass(i-1).bits.uop := r_uops(i-1)
-        io.bypass(i-1).bits.data.blinded := r_blinded(i-1)
+        // io.bypass(i-1).bits.data.blinded := r_blinded(i-1)
       }
     }
 
@@ -255,16 +258,16 @@ abstract class PipelinedFunctionalUnit(
     io.resp.bits.predicated := false.B
     io.resp.bits.uop := r_uops(numStages-1)
     io.resp.bits.uop.br_mask := GetNewBrMask(io.brupdate, r_uops(numStages-1))
-    io.resp.bits.data.blinded := r_blinded(numStages-1)
+    // io.resp.bits.data.blinded := r_blinded(numStages-1)
 
     // bypassing (TODO allow bypass vector to have a different size from numStages)
     if (numBypassStages > 0 && earliestBypassStage == 0) {
       io.bypass(0).bits.uop := io.req.bits.uop
-      io.bypass(0).bits.data.blinded := io.req.bits.blinded_result
+      // io.bypass(0).bits.data.blinded := io.req.bits.blinded_result
 
       for (i <- 1 until numBypassStages) {
         io.bypass(i).bits.uop := r_uops(i-1)
-        io.bypass(i).bits.data.blinded := r_blinded(i-1)
+        // io.bypass(i).bits.data.blinded := r_blinded(i-1)
       }
     }
   } else {
@@ -278,7 +281,7 @@ abstract class PipelinedFunctionalUnit(
     io.resp.bits.uop := io.req.bits.uop
     io.resp.bits.uop.br_mask := GetNewBrMask(io.brupdate, io.req.bits.uop)
 
-    io.resp.bits.data.blinded := io.req.bits.blinded_result
+    // io.resp.bits.data.blinded := io.req.bits.blinded_result
   }
 }
 
@@ -306,31 +309,45 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   val imm_xprlen = ImmGen(uop.imm_packed, uop.ctrl.imm_sel)
 
   // operand 1 select
-  var op1_data: UInt = null
+  var op1_data: Blinded[UInt] = null
   if (isJmpUnit) {
     // Get the uop PC for jumps
     val block_pc = AlignPCToBoundary(io.get_ftq_pc.pc, icBlockBytes)
     val uop_pc = (block_pc | uop.pc_lob) - Mux(uop.edge_inst, 2.U, 0.U)
 
+    val uop_pc_blinded = Wire(Blinded(UInt(xLen.W)))
+    uop_pc_blinded.bits := Sext(uop_pc, xLen)
+    uop_pc_blinded.blinded := false.B
+
+    val zero_tmp = Wire(Blinded(UInt(xLen.W)))
+    zero_tmp.bits := 0.U
+    zero_tmp.blinded := false.B
+
     op1_data = Mux(uop.ctrl.op1_sel.asUInt === OP1_RS1 , io.req.bits.rs1_data,
-               Mux(uop.ctrl.op1_sel.asUInt === OP1_PC  , Sext(uop_pc, xLen),
-                                                         0.U))
+               Mux(uop.ctrl.op1_sel.asUInt === OP1_PC  , uop_pc_blinded,
+                                                         zero_tmp))
   } else {
+    val zero_tmp = Wire(Blinded(UInt()))
+    zero_tmp.bits := 0.U
+    zero_tmp.blinded := false.B
+
     op1_data = Mux(uop.ctrl.op1_sel.asUInt === OP1_RS1 , io.req.bits.rs1_data,
-                                                         0.U)
+                                                         zero_tmp)
   }
 
   // operand 2 select
-  val op2_data = Mux(uop.ctrl.op2_sel === OP2_IMM,  Sext(imm_xprlen.asUInt, xLen),
-                 Mux(uop.ctrl.op2_sel === OP2_IMMC, io.req.bits.uop.prs1(4,0),
-                 Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data,
-                 Mux(uop.ctrl.op2_sel === OP2_NEXT, Mux(uop.is_rvc, 2.U, 4.U),
-                                                    0.U))))
+  val op2_data = Wire(Blinded(UInt()))
+  op2_data.bits :=  Mux(uop.ctrl.op2_sel === OP2_IMM,  Sext(imm_xprlen.asUInt, xLen),
+                    Mux(uop.ctrl.op2_sel === OP2_IMMC, io.req.bits.uop.prs1(4,0),
+                    Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data.bits,
+                    Mux(uop.ctrl.op2_sel === OP2_NEXT, Mux(uop.is_rvc, 2.U, 4.U),
+                                                       0.U))))
+  op2_data.blinded := Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data.blinded, false.B)
 
   val alu = Module(new freechips.rocketchip.rocket.ALU())
 
-  alu.io.in1 := op1_data.asUInt
-  alu.io.in2 := op2_data.asUInt
+  alu.io.in1 := op1_data.bits.asUInt
+  alu.io.in2 := op2_data.bits.asUInt
   alu.io.fn  := uop.ctrl.op_fcn
   alu.io.dw  := uop.ctrl.fcn_dw
 
@@ -342,8 +359,8 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
     killed := true.B
   }
 
-  val rs1 = io.req.bits.rs1_data
-  val rs2 = io.req.bits.rs2_data
+  val rs1 = Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
+  val rs2 = Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
   val br_eq  = (rs1 === rs2)
   val br_ltu = (rs1.asUInt < rs2.asUInt)
   val br_lt  = (~(rs1(xLen-1) ^ rs2(xLen-1)) & br_ltu |
@@ -416,7 +433,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
     }
 
 
-    val jalr_target_base = io.req.bits.rs1_data.asSInt
+    val jalr_target_base = Mux(io.req.bits.rs1_data.blinded, 0.S, io.req.bits.rs1_data.bits.asSInt)
     val jalr_target_xlen = Wire(UInt(xLen.W))
     jalr_target_xlen := (jalr_target_base + target_offset).asUInt
     val jalr_target = (encodeVirtualAddress(jalr_target_xlen, jalr_target_xlen).asSInt & -2.S).asUInt
@@ -447,36 +464,43 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 //   io.resp.bits.data := reg_data
 
   val r_val  = RegInit(VecInit(Seq.fill(numStages) { false.B }))
-  val r_data = Reg(Vec(numStages, UInt(xLen.W)))
-  val r_blinded = Reg(Vec(numStages, Bool()))
+  val r_data = Reg(Vec(numStages, Blinded(UInt(xLen.W))))
+  // val r_blinded = Reg(Vec(numStages, Bool()))
   val r_pred = Reg(Vec(numStages, Bool()))
+  val blinded_alu_io_out = Wire(Blinded(UInt(dataWidth.W)))
+  blinded_alu_io_out.bits := alu.io.out
+  blinded_alu_io_out.blinded := op1_data.blinded || op2_data.blinded
   val alu_out = Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
     Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
-    Mux(io.req.bits.uop.uopc === uopMOV, io.req.bits.rs2_data, alu.io.out))
+    Mux(io.req.bits.uop.uopc === uopMOV, io.req.bits.rs2_data, blinded_alu_io_out))
+  
+  val pc_sel_brjump_tmp = Wire(Blinded(UInt(dataWidth.W)))
+  pc_sel_brjump_tmp.bits := pc_sel === PC_BRJMP
+  pc_sel_brjump_tmp.blinded := false.B // this is false here because we do not let pc_sel get calculated using blinded values (we zero them out)
   r_val (0)     := io.req.valid
-  r_data(0)     := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out) // TODO check how sfb optimization affects blindedness taint-tracking
-  r_blinded(0)  := io.req.bits.blinded_result
+  r_data(0)     := Mux(io.req.bits.uop.is_sfb_br, pc_sel_brjump_tmp, alu_out) // TODO double-check how sfb optimization affects blindedness taint-tracking
+  // r_blinded(0)  := io.req.bits.blinded_result
   r_pred(0)     := io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data
   for (i <- 1 until numStages) {
     r_val(i)      := r_val(i-1)
     r_data(i)     := r_data(i-1)
-    r_blinded(i)  := r_blinded(i-1)
+    // r_blinded(i)  := r_blinded(i-1)
     r_pred(i)     := r_pred(i-1)
   }
-  io.resp.bits.data.bits := r_data(numStages-1)
-  io.resp.bits.data.blinded := r_blinded(numStages-1)
+  io.resp.bits.data := r_data(numStages-1)
+  // io.resp.bits.data.blinded := r_blinded(numStages-1)
   io.resp.bits.predicated := r_pred(numStages-1)
   // Bypass
   // for the ALU, we can bypass same cycle as compute
   require (numStages >= 1)
   require (numBypassStages >= 1)
   io.bypass(0).valid := io.req.valid
-  io.bypass(0).bits.data.bits := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
-  io.bypass(0).bits.data.blinded := io.req.bits.blinded_result
+  io.bypass(0).bits.data := Mux(io.req.bits.uop.is_sfb_br, pc_sel_brjump_tmp, alu_out)
+  // io.bypass(0).bits.data.blinded := io.req.bits.blinded_result
   for (i <- 1 until numStages) {
     io.bypass(i).valid := r_val(i-1)
-    io.bypass(i).bits.data.bits := r_data(i-1)
-    io.bypass(i).bits.data.blinded := r_blinded(i-1)
+    io.bypass(i).bits.data := r_data(i-1)
+    // io.bypass(i).bits.data.blinded := r_blinded(i-1)
   }
 
   // Exceptions
@@ -499,7 +523,7 @@ class MemAddrCalcUnit(implicit p: Parameters)
   with freechips.rocketchip.rocket.constants.ScalarOpConstants
 {
   // perform address calculation
-  val sum = (io.req.bits.rs1_data.asSInt + io.req.bits.uop.imm_packed(19,8).asSInt).asUInt
+  val sum = Mux(io.req.bits.rs1_data.blinded, 0.U, (io.req.bits.rs1_data.bits.asSInt + io.req.bits.uop.imm_packed(19,8).asSInt).asUInt)
   val ea_sign = Mux(sum(vaddrBits-1), ~sum(63,vaddrBits) === 0.U,
                                        sum(63,vaddrBits) =/= 0.U)
   val effective_address = Cat(ea_sign, sum(vaddrBits-1,0)).asUInt
@@ -507,7 +531,7 @@ class MemAddrCalcUnit(implicit p: Parameters)
   val store_data = io.req.bits.rs2_data
 
   io.resp.bits.addr := effective_address
-  io.resp.bits.data.bits := store_data
+  io.resp.bits.data := store_data
 
   if (dataWidth > 63) {
     assert (!(io.req.valid && io.req.bits.uop.ctrl.is_std &&
@@ -518,7 +542,8 @@ class MemAddrCalcUnit(implicit p: Parameters)
   }
 
   assert (!(io.req.bits.uop.fp_val && io.req.valid && io.req.bits.uop.uopc =/=
-          uopLD && io.req.bits.uop.uopc =/= uopSTA),
+          uopLD && io.req.bits.uop.uopc =/= uopSTA 
+          && io.req.bits.uop.uopc =/= uopBLND_1 && io.req.bits.uop.uopc =/= uopRBLND_1),
           "[maddrcalc] assert we never get store data in here.")
 
   // Handle misaligned exceptions
@@ -536,8 +561,18 @@ class MemAddrCalcUnit(implicit p: Parameters)
   bkptu.io.mcontext := io.mcontext
   bkptu.io.scontext := io.scontext
 
+  // storing or loading using a blinded addr
+  io.blinded_xcpt.valid := io.req.valid && (io.req.bits.uop.uopc === uopLD     || 
+                                            io.req.bits.uop.uopc === uopSTA    || 
+                                            io.req.bits.uop.uopc === uopAMO_AG || 
+                                            io.req.bits.uop.uopc === uopBLND_1 || 
+                                            io.req.bits.uop.uopc === uopRBLND_1) && io.req.bits.rs1_data.blinded
+  io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
+  io.blinded_xcpt.bits.uop   := io.req.bits.uop
+  
+  
   val ma_ld  = io.req.valid && io.req.bits.uop.uopc === uopLD && misaligned
-  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG) && misaligned
+  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG || io.req.bits.uop.uopc === uopBLND_1 || io.req.bits.uop.uopc === uopRBLND_1) && misaligned
   val dbg_bp = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.debug_ld) ||
                                 (io.req.bits.uop.uopc === uopSTA && bkptu.io.debug_st))
   val bp     = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.xcpt_ld) ||
@@ -558,8 +593,8 @@ class MemAddrCalcUnit(implicit p: Parameters)
   io.resp.bits.sfence.valid := io.req.valid && io.req.bits.uop.mem_cmd === M_SFENCE
   io.resp.bits.sfence.bits.rs1 := io.req.bits.uop.mem_size(0)
   io.resp.bits.sfence.bits.rs2 := io.req.bits.uop.mem_size(1)
-  io.resp.bits.sfence.bits.addr := io.req.bits.rs1_data
-  io.resp.bits.sfence.bits.asid := io.req.bits.rs2_data
+  io.resp.bits.sfence.bits.addr := io.req.bits.rs1_data.bits
+  io.resp.bits.sfence.bits.asid := io.req.bits.rs2_data.bits
 }
 
 
@@ -581,10 +616,12 @@ class FPUUnit(implicit p: Parameters)
   val fpu = Module(new FPU())
   fpu.io.req.valid         := io.req.valid
   fpu.io.req.bits.uop      := io.req.bits.uop
-  fpu.io.req.bits.rs1_data := io.req.bits.rs1_data
-  fpu.io.req.bits.rs2_data := io.req.bits.rs2_data
-  fpu.io.req.bits.rs3_data := io.req.bits.rs3_data
+  fpu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
+  fpu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
+  fpu.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
   fpu.io.req.bits.fcsr_rm  := io.fcsr_rm
+
+  val out_blinded = Pipe(io.req.valid, io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded || io.req.bits.rs3_data.blinded, numStages).bits
 
   io.resp.bits.data.bits         := fpu.io.resp.bits.data.bits // blinded flag is not passed through FPU
   io.resp.bits.fflags.valid      := fpu.io.resp.bits.fflags.valid
@@ -617,8 +654,8 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   req <> fp_ctrl
 
   req.rm := fp_rm
-  req.in1 := unbox(io_req.rs1_data, tag, None)
-  req.in2 := unbox(io_req.rs2_data, tag, None)
+  req.in1 := unbox(io_req.rs1_data.bits, tag, None)
+  req.in2 := unbox(io_req.rs2_data.bits, tag, None)
   req.in3 := DontCare
   req.typ := ImmGenTyp(io_req.uop.imm_packed)
   req.fmt := DontCare // FIXME: this may not be the right thing to do here
@@ -633,11 +670,13 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   val ifpu = Module(new tile.IntToFP(intToFpLatency))
   ifpu.io.in.valid := io.req.valid
   ifpu.io.in.bits := req
-  ifpu.io.in.bits.in1 := io_req.rs1_data
+  ifpu.io.in.bits.in1 := io_req.rs1_data.bits
   val out_double = Pipe(io.req.valid, fp_ctrl.typeTagOut === D, intToFpLatency).bits
+  val out_blinded = Pipe(io.req.valid, io_req.rs1_data.blinded || io_req.rs2_data.blinded, intToFpLatency).bits
 
 //io.resp.bits.data              := box(ifpu.io.out.bits.data, !io.resp.bits.uop.fp_single)
   io.resp.bits.data.bits         := box(ifpu.io.out.bits.data, out_double)
+  io.resp.bits.data.blinded      := out_blinded
   io.resp.bits.fflags.valid      := ifpu.io.out.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := ifpu.io.out.bits.exc
@@ -694,8 +733,9 @@ class DivUnit(dataWidth: Int)(implicit p: Parameters)
   div.io.req.valid    := io.req.valid && !this.do_kill
   div.io.req.bits.dw  := io.req.bits.uop.ctrl.fcn_dw
   div.io.req.bits.fn  := io.req.bits.uop.ctrl.op_fcn
-  div.io.req.bits.in1 := io.req.bits.rs1_data
-  div.io.req.bits.in2 := io.req.bits.rs2_data
+  div.io.req.bits.in1 := Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
+  div.io.req.bits.in2 := Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
+  // TODO raise exception if either rs1 or rs2 is blinded
   div.io.req.bits.tag := DontCare
   io.req.ready        := div.io.req.ready
 
@@ -726,9 +766,13 @@ class PipelinedMulUnit(numStages: Int, dataWidth: Int)(implicit p: Parameters)
   imul.io.req.valid    := io.req.valid
   imul.io.req.bits.fn  := io.req.bits.uop.ctrl.op_fcn
   imul.io.req.bits.dw  := io.req.bits.uop.ctrl.fcn_dw
-  imul.io.req.bits.in1 := io.req.bits.rs1_data
-  imul.io.req.bits.in2 := io.req.bits.rs2_data
+  imul.io.req.bits.in1 := io.req.bits.rs1_data.bits
+  imul.io.req.bits.in2 := io.req.bits.rs2_data.bits
   imul.io.req.bits.tag := DontCare
+
+  val out_blinded = Pipe(io.req.valid, io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded, numStages).bits
+
   // response
   io.resp.bits.data.bits    := imul.io.resp.bits.data
+  io.resp.bits.data.blinded := out_blinded
 }

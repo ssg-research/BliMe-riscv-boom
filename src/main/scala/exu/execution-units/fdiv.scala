@@ -96,6 +96,10 @@ class FDivSqrtUnit(implicit p: Parameters)
   val r_buffer_req = Reg(new FuncUnitReq(dataWidth=65))
   val r_buffer_fin = Reg(new tile.FPInput)
 
+  // does not support blinded inputs due to data-dependent latency; // TODO raise exception flag
+  val rs1_data = Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
+  val rs2_data = Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
+
   val fdiv_decoder = Module(new UOPCodeFDivDecoder)
   fdiv_decoder.io.uopc := io.req.bits.uop.uopc
 
@@ -113,8 +117,8 @@ class FDivSqrtUnit(implicit p: Parameters)
     s2d.io.detectTininess := DontCare
     s2d.io.out
   }
-  val in1_upconvert = upconvert(unbox(io.req.bits.rs1_data, false.B, Some(tile.FType.S)))
-  val in2_upconvert = upconvert(unbox(io.req.bits.rs2_data, false.B, Some(tile.FType.S)))
+  val in1_upconvert = upconvert(unbox(rs1_data, false.B, Some(tile.FType.S)))
+  val in2_upconvert = upconvert(unbox(rs2_data, false.B, Some(tile.FType.S)))
 
   when (io.req.valid && !IsKilledByBranch(io.brupdate, io.req.bits.uop) && !io.req.bits.kill) {
     r_buffer_val := true.B
@@ -125,8 +129,8 @@ class FDivSqrtUnit(implicit p: Parameters)
     r_buffer_fin.rm := io.fcsr_rm
     r_buffer_fin.typ := 0.U // unused for fdivsqrt
     val tag = fdiv_decoder.io.sigs.typeTagIn
-    r_buffer_fin.in1 := unbox(io.req.bits.rs1_data, tag, Some(tile.FType.D))
-    r_buffer_fin.in2 := unbox(io.req.bits.rs2_data, tag, Some(tile.FType.D))
+    r_buffer_fin.in1 := unbox(rs1_data, tag, Some(tile.FType.D))
+    r_buffer_fin.in2 := unbox(rs2_data, tag, Some(tile.FType.D))
     when (tag === S) {
       r_buffer_fin.in1 := in1_upconvert
       r_buffer_fin.in2 := in2_upconvert

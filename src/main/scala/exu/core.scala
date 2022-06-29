@@ -1286,6 +1286,14 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   rob.io.lsu_clr_unsafe := io.lsu.clr_unsafe
   rob.io.lxcpt          <> io.lsu.lxcpt
 
+  // Blinded policy exceptions
+  // val blinded_xcpt = WireDefault(false.B) // TODO drive this with something
+
+  // blinded_xcpt := exe_units
+  rob.io.blinded_xcpt.valid := exe_units.map(_.io.blinded_xcpt.valid).fold(false.B)(_|_)
+  rob.io.blinded_xcpt.bits  := PriorityMux(exe_units.map(e =>
+                                      (e.io.blinded_xcpt.valid, e.io.blinded_xcpt.bits)))
+
   assert (!(csr.io.singleStep), "[core] single-step is unsupported.")
 
 

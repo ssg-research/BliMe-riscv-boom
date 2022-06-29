@@ -83,6 +83,7 @@ class RobIo(
 
   val fflags = Flipped(Vec(numFpuPorts, new ValidIO(new FFlagsResp())))
   val lxcpt = Flipped(new ValidIO(new Exception())) // LSU
+  val blinded_xcpt = Flipped(new ValidIO(new Exception())) // exception due to blinded policy violation
 
   // Commit stage (free resources; also used for rollback).
   val commit = Output(new CommitSignals())
@@ -395,6 +396,9 @@ class Rob(
           "An instruction marked as safe is causing an exception")
       }
     }
+    when (io.blinded_xcpt.valid && MatchBank(GetBankIdx(io.blinded_xcpt.bits.uop.rob_idx))) {
+      rob_exception(GetRowIdx(io.blinded_xcpt.bits.uop.rob_idx)) := true.B
+    }
     can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head)
 
     //-----------------------------------------------
@@ -629,7 +633,16 @@ class Rob(
   }
 
   when (!(io.flush.valid || exception_thrown) && rob_state =/= s_rollback) {
-    when (io.lxcpt.valid) {
+    when (io.blinded_xcpt.valid) {
+      val new_xcpt_uop = io.blinded_xcpt.bits.uop
+
+      when (!r_xcpt_val || IsOlder(new_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
+        r_xcpt_val              := true.B
+        next_xcpt_uop           := new_xcpt_uop
+        next_xcpt_uop.exc_cause := io.blinded_xcpt.bits.cause
+        r_xcpt_badvaddr         := io.blinded_xcpt.bits.badvaddr
+      }
+    } .elsewhen (io.lxcpt.valid) {
       val new_xcpt_uop = io.lxcpt.bits.uop
 
       when (!r_xcpt_val || IsOlder(new_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {

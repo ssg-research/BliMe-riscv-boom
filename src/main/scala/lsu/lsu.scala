@@ -69,6 +69,7 @@ class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
 {
   val addr  = UInt(coreMaxAddrBits.W)
   val data  = Blinded(Bits(coreDataBits.W))
+  val blindedOnly = Bool()
   val is_hella = Bool() // Is this the hellacache req? If so this is not tracked in LDQ or STQ
 }
 
@@ -762,6 +763,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.addr  := 0.U
     dmem_req(w).bits.data.bits  := 0.U
     dmem_req(w).bits.data.blinded  := false.B
+    dmem_req(w).bits.blindedOnly := false.B
     dmem_req(w).bits.is_hella := false.B
 
     io.dmem.s1_kill(w) := false.B
@@ -788,6 +790,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                         stq_commit_e.bits.data.bits.bits,
                                         coreDataBytes)).data
       dmem_req(w).bits.data.blinded  := stq_commit_e.bits.data.bits.blinded
+      dmem_req(w).bits.blindedOnly  := stq_commit_e.bits.uop.uopc === uopBLND_2 || stq_commit_e.bits.uop.uopc === uopRBLND_2
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
 
       stq_execute_head                     := Mux(dmem_req_fire(w),
@@ -887,9 +890,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq_incoming_idx(w),
         io.core.fp_stdata.bits.uop.stq_idx)
       stq(sidx).bits.data.valid := true.B
-      stq(sidx).bits.data.bits  := Mux(will_fire_std_incoming(w) || will_fire_stad_incoming(w),
-        exe_req(w).bits.data,
-        io.core.fp_stdata.bits.data)
+      when (stq(sidx).bits.uop.uopc === uopBLND_2) {
+        stq(sidx).bits.data.bits.blinded := true.B
+      } .elsewhen (stq(sidx).bits.uop.uopc === uopRBLND_2) {
+        stq(sidx).bits.data.bits.blinded := false.B
+      } .otherwise {
+        stq(sidx).bits.data.bits  := Mux(will_fire_std_incoming(w) || will_fire_stad_incoming(w),
+          exe_req(w).bits.data,
+          io.core.fp_stdata.bits.data)
+      }
       assert(!(stq(sidx).bits.data.valid),
         "[lsu] Incoming store is overwriting a valid data entry")
     }

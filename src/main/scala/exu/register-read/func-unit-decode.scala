@@ -165,16 +165,20 @@ object MemRRdDecode extends RRdDecodeConstants
 {
   val table: Array[(BitPat, List[BitPat])] =
              Array[(BitPat, List[BitPat])](
-                               // br type
-                               // |      use alu pipe              op1 sel   op2 sel
-                               // |      |  use muldiv pipe        |         |         immsel       csr_cmd
-                               // |      |  |  use mem pipe        |         |         |     rf wen |
-                               // |      |  |  |  alu fcn  wd/word?|         |         |     |      |
-                               // |      |  |  |  |        |       |         |         |     |      |
-         BitPat(uopLD)    -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_I, REN_0, CSR.N),
-         BitPat(uopSTA)   -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_S, REN_0, CSR.N),
-         BitPat(uopSTD)   -> List(BR_N , N, N, Y, FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_X, REN_0, CSR.N),
-         BitPat(uopSFENCE)-> List(BR_N , N, N, Y, FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_X, REN_0, CSR.N),
+                                 // br type
+                                 // |      use alu pipe              op1 sel   op2 sel
+                                 // |      |  use muldiv pipe        |         |         immsel       csr_cmd
+                                 // |      |  |  use mem pipe        |         |         |     rf wen |
+                                 // |      |  |  |  alu fcn  wd/word?|         |         |     |      |
+                                 // |      |  |  |  |        |       |         |         |     |      |
+         BitPat(uopLD)      -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_I, REN_0, CSR.N),
+         BitPat(uopSTA)     -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_S, REN_0, CSR.N),
+         BitPat(uopBLND_1)  -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_S, REN_0, CSR.N),
+         BitPat(uopRBLND_1) -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_IMM , IS_S, REN_0, CSR.N),
+         BitPat(uopBLND_2)  -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_X   , IS_S, REN_0, CSR.N),
+         BitPat(uopRBLND_2) -> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_X   , IS_S, REN_0, CSR.N),
+         BitPat(uopSTD)     -> List(BR_N , N, N, Y, FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_X, REN_0, CSR.N),
+         BitPat(uopSFENCE)  -> List(BR_N , N, N, Y, FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_X, REN_0, CSR.N),
 
          BitPat(uopAMO_AG)-> List(BR_N , N, N, Y, FN_ADD , DW_XPR, OP1_RS1 , OP2_ZERO, IS_X, REN_0, CSR.N))
 }
@@ -337,8 +341,8 @@ class RegisterReadDecode(supportedUnits: SupportedFuncUnits)(implicit p: Paramet
   io.rrd_uop.ctrl.op_fcn  := rrd_cs.op_fcn.asUInt
   io.rrd_uop.ctrl.fcn_dw  := rrd_cs.fcn_dw.asBool
   io.rrd_uop.ctrl.is_load := io.rrd_uop.uopc === uopLD
-  io.rrd_uop.ctrl.is_sta  := io.rrd_uop.uopc === uopSTA || io.rrd_uop.uopc === uopAMO_AG
-  io.rrd_uop.ctrl.is_std  := io.rrd_uop.uopc === uopSTD || (io.rrd_uop.ctrl.is_sta && io.rrd_uop.lrs2_rtype === RT_FIX)
+  io.rrd_uop.ctrl.is_sta  := io.rrd_uop.uopc === uopSTA || io.rrd_uop.uopc === uopAMO_AG || io.rrd_uop.uopc === uopBLND_1 || io.rrd_uop.uopc === uopRBLND_1
+  io.rrd_uop.ctrl.is_std  := io.rrd_uop.uopc === uopSTD || (io.rrd_uop.ctrl.is_sta && io.rrd_uop.lrs2_rtype === RT_FIX) || io.rrd_uop.uopc === uopBLND_2 || io.rrd_uop.uopc === uopRBLND_2
 
   when (io.rrd_uop.uopc === uopAMO_AG || (io.rrd_uop.uopc === uopLD && io.rrd_uop.mem_cmd === M_XLR)) {
     io.rrd_uop.imm_packed := 0.U
