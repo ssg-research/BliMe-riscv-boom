@@ -142,12 +142,14 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   val wordBits = outer.icacheParams.fetchBytes*8
   // Each of these cases require some special-case handling.
   require (tl_out.d.bits.data.getWidth == (wordBits+wordBits/8) || (2*tl_out.d.bits.data.getWidth == (wordBits+wordBits/8) && nBanks == 2))
+
   // If TL refill is half the wordBits size and we have two banks, then the
   // refill writes to only one bank per cycle (instead of across two banks every
   // cycle).
   val refillsToOneBank = (2*tl_out.d.bits.data.getWidth == (wordBits+wordBits/8))
 
-
+  // requirement for tagged memory (blindedness)
+  require (tl_out.d.bits.data.getWidth % 9 == 0)
 
   val s0_valid = io.req.fire
   val s0_vaddr = io.req.bits.addr
@@ -250,7 +252,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
       val mem_idx = Mux(refill_one_beat, (refill_idx << log2Ceil(refillCycles)) | refill_cnt,
                     row(s0_vaddr))
       when (wen) {
-        dataArray.write(mem_idx, tl_out.d.bits.data)
+        dataArray.write(mem_idx, Mux(tl_out.d.bits.data(tl_out.d.bits.data.getWidth-1, tl_out.d.bits.data.getWidth*8/9).orR, 0.U, 
+                                                                                                  tl_out.d.bits.data(tl_out.d.bits.data.getWidth*8/9 - 1, 0)))
       }
       if (enableICacheDelay)
         s2_dout(i) := dataArray.read(RegNext(mem_idx), RegNext(!wen && s0_ren))
@@ -297,10 +300,12 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
           b1Row(s0_vaddr))
 
         when (wen && refill_cnt(0) === 0.U) {
-          dataArraysB0(i).write(mem_idx0, tl_out.d.bits.data)
+          dataArraysB0(i).write(mem_idx0, Mux(tl_out.d.bits.data(tl_out.d.bits.data.getWidth-1, tl_out.d.bits.data.getWidth*8/9).orR, 0.U, 
+                                                                                                  tl_out.d.bits.data(tl_out.d.bits.data.getWidth*8/9 - 1, 0)))
         }
         when (wen && refill_cnt(0) === 1.U) {
-          dataArraysB1(i).write(mem_idx1, tl_out.d.bits.data)
+          dataArraysB1(i).write(mem_idx1, Mux(tl_out.d.bits.data(tl_out.d.bits.data.getWidth-1, tl_out.d.bits.data.getWidth*8/9).orR, 0.U, 
+                                                                                                  tl_out.d.bits.data(tl_out.d.bits.data.getWidth*8/9 - 1, 0)))
         }
       } else {
         // write a refill beat across both banks.
@@ -312,7 +317,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
           b1Row(s0_vaddr))
 
         when (wen) {
-          val data = tl_out.d.bits.data
+          val data = Mux(tl_out.d.bits.data(tl_out.d.bits.data.getWidth-1, tl_out.d.bits.data.getWidth*8/9).orR, 0.U, 
+                                                                                                  tl_out.d.bits.data(tl_out.d.bits.data.getWidth*8/9 - 1, 0))
           dataArraysB0(i).write(mem_idx0, data(wordBits/2-1, 0))
           dataArraysB1(i).write(mem_idx1, data(wordBits-1, wordBits/2))
         }
