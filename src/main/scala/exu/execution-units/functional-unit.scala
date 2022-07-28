@@ -327,7 +327,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
                Mux(uop.ctrl.op1_sel.asUInt === OP1_PC  , uop_pc_blinded,
                                                          zero_tmp))
   } else {
-    val zero_tmp = Wire(Blinded(UInt()))
+    val zero_tmp = Wire(Blinded(UInt(xLen.W)))
     zero_tmp.bits := 0.U
     zero_tmp.blinded := false.B
 
