@@ -140,16 +140,8 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
     when (!(io.ldspec_miss && (p1_poisoned || p2_poisoned))) {
       next_state := s_valid_1
       when (p1) {
-        when (slot_uop.uopc === uopBLND_1) {
-          slot_uop.uopc := uopBLND_2
-          next_uopc := uopBLND_2
-        } .elsewhen (slot_uop.uopc === uopRBLND_1) {
-          slot_uop.uopc := uopRBLND_2
-          next_uopc := uopRBLND_2
-        } .otherwise {
-          slot_uop.uopc := uopSTD
-          next_uopc := uopSTD
-        }
+        slot_uop.uopc := uopSTD
+        next_uopc := uopSTD
         slot_uop.lrs1_rtype := RT_X
         next_lrs1_rtype := RT_X
       } .otherwise {

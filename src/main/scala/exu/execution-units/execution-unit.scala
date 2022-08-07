@@ -401,6 +401,9 @@ class ALUExeUnit(
   }
 
   // Mem Unit --------------------------
+  val memAddrCalc_blinded_xcpt = Wire(Valid(new Exception));
+  memAddrCalc_blinded_xcpt.valid := false.B
+  memAddrCalc_blinded_xcpt.bits := DontCare
   if (hasMem) {
     require(!hasAlu)
     val maddrcalc = Module(new MemAddrCalcUnit)
@@ -421,6 +424,7 @@ class ALUExeUnit(
     require(numBypassStages == 0)
 
     io.lsu_io.req := maddrcalc.io.resp
+    memAddrCalc_blinded_xcpt := maddrcalc.io.blinded_xcpt
 
     io.ll_iresp <> io.lsu_io.iresp
     if (usingFPU) {
@@ -446,13 +450,17 @@ class ALUExeUnit(
     }
   }
 
-  io.blinded_xcpt.valid       := iresp_fu_units.map(_.io.blinded_xcpt.valid).fold(false.B)(_|_)
-  // io.blinded_xcpt.bits        := PriorityMux(iresp_fu_units.map(f =>
-  //                                     (f.io.blinded_xcpt.valid, f.io.blinded_xcpt.bits)))
-  io.blinded_xcpt.bits.uop        := MuxCase(DontCare, iresp_fu_units.map(f =>
-                                              (f.io.blinded_xcpt.valid) -> (f.io.blinded_xcpt.bits.uop)))
-  io.blinded_xcpt.bits.cause        := MuxCase(DontCare, iresp_fu_units.map(f =>
-                                              (f.io.blinded_xcpt.valid) -> (f.io.blinded_xcpt.bits.cause)))
+  when (memAddrCalc_blinded_xcpt.valid) {
+    io.blinded_xcpt := memAddrCalc_blinded_xcpt
+  } .otherwise {
+    io.blinded_xcpt.valid       := iresp_fu_units.map(_.io.blinded_xcpt.valid).fold(false.B)(_|_)
+    // io.blinded_xcpt.bits        := PriorityMux(iresp_fu_units.map(f =>
+    //                                     (f.io.blinded_xcpt.valid, f.io.blinded_xcpt.bits)))
+    io.blinded_xcpt.bits.uop        := MuxCase(DontCare, iresp_fu_units.map(f =>
+                                                (f.io.blinded_xcpt.valid) -> (f.io.blinded_xcpt.bits.uop)))
+    io.blinded_xcpt.bits.cause        := MuxCase(DontCare, iresp_fu_units.map(f =>
+                                                (f.io.blinded_xcpt.valid) -> (f.io.blinded_xcpt.bits.cause)))
+  }
 
   assert ((PopCount(iresp_fu_units.map(_.io.resp.valid)) <= 1.U && !div_resp_val) ||
           (PopCount(iresp_fu_units.map(_.io.resp.valid)) <= 2.U && (div_resp_val)),

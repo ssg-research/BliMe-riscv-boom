@@ -185,7 +185,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
 
-  val debug_wb_data       = UInt(xLen.W)
+  val debug_wb_data       = Blinded(UInt(xLen.W))
 }
 
 class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
@@ -198,7 +198,7 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
 
-  val debug_wb_data       = UInt(xLen.W)
+  val debug_wb_data       = Blinded(UInt(xLen.W))
 }
 
 class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
@@ -790,7 +790,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                         stq_commit_e.bits.data.bits.bits,
                                         coreDataBytes)).data
       dmem_req(w).bits.data.blinded  := stq_commit_e.bits.data.bits.blinded
-      dmem_req(w).bits.blindedOnly  := stq_commit_e.bits.uop.uopc === uopBLND_2 || stq_commit_e.bits.uop.uopc === uopRBLND_2
+      dmem_req(w).bits.blindedOnly  := stq_commit_e.bits.uop.uopc === uopBLND || stq_commit_e.bits.uop.uopc === uopRBLND
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
 
       stq_execute_head                     := Mux(dmem_req_fire(w),
@@ -890,10 +890,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq_incoming_idx(w),
         io.core.fp_stdata.bits.uop.stq_idx)
       stq(sidx).bits.data.valid := true.B
-      when (stq(sidx).bits.uop.uopc === uopBLND_2) {
+      when (stq(sidx).bits.uop.uopc === uopBLND) {
         stq(sidx).bits.data.bits.blinded := true.B
-      } .elsewhen (stq(sidx).bits.uop.uopc === uopRBLND_2) {
+        // printf("[lsu] Blinded memory in STQ at addr %x\n", stq(sidx).bits.addr.bits)
+      } .elsewhen (stq(sidx).bits.uop.uopc === uopRBLND) {
         stq(sidx).bits.data.bits.blinded := false.B
+        // printf("[lsu] Unblinded memory in STQ at addr %x\n", stq(sidx).bits.addr.bits)
       } .otherwise {
         stq(sidx).bits.data.bits  := Mux(will_fire_std_incoming(w) || will_fire_stad_incoming(w),
           exe_req(w).bits.data,
@@ -1343,11 +1345,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         io.core.exe(w).fresp.valid     := send_fresp
         io.core.exe(w).fresp.bits.data := io.dmem.resp(w).bits.data
 
+        when (io.dmem.resp(w).bits.data.blinded) {
+          printf("[lsu] Blinded data loaded from mem to core\n")
+        }
+
         assert(send_iresp ^ send_fresp)
         dmem_resp_fired(w) := true.B
 
         ldq(ldq_idx).bits.succeeded      := io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid
-        ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data.bits
+        ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data
       }
         .elsewhen (io.dmem.resp(w).bits.uop.uses_stq)
       {
@@ -1359,7 +1365,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           io.core.exe(w).iresp.bits.uop  := stq(io.dmem.resp(w).bits.uop.stq_idx).bits.uop
           io.core.exe(w).iresp.bits.data := io.dmem.resp(w).bits.data
 
-          stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data.bits
+          stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data
         }
       }
     }
@@ -1401,13 +1407,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       io.core.exe(w).iresp.bits.data.blinded  := loadgen_blindmask.data(0)
       io.core.exe(w).fresp.bits.data.bits     := loadgen.data
       io.core.exe(w).fresp.bits.data.blinded  := loadgen_blindmask.data(0)
+      when (loadgen_blindmask.data(0)) {
+        printf("[lsu] Blinded data forwarded to core\n")
+      }
 
       when (data_ready && live) {
         ldq(f_idx).bits.succeeded := data_ready
         ldq(f_idx).bits.forward_std_val := true.B
         ldq(f_idx).bits.forward_stq_idx := wb_forward_stq_idx(w)
 
-        ldq(f_idx).bits.debug_wb_data   := loadgen.data
+        ldq(f_idx).bits.debug_wb_data.bits   := loadgen.data
+        ldq(f_idx).bits.debug_wb_data.blinded   := loadgen_blindmask.data(0)
       }
     }
   }
@@ -1509,9 +1519,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         val uop    = Mux(commit_store, stq(idx).bits.uop, ldq(idx).bits.uop)
         val addr   = Mux(commit_store, stq(idx).bits.addr.bits, ldq(idx).bits.addr.bits)
         val stdata = Mux(commit_store, stq(idx).bits.data.bits.bits, 0.U)
-        val wbdata = Mux(commit_store, stq(idx).bits.debug_wb_data, ldq(idx).bits.debug_wb_data)
-        printf("MT %x %x %x %x %x %x %x\n",
-          io.core.tsc_reg, uop.uopc, uop.mem_cmd, uop.mem_size, addr, stdata, wbdata)
+        val stdata_bl = Mux(commit_store, stq(idx).bits.data.bits.blinded, false.B)
+        val wbdata = Mux(commit_store, stq(idx).bits.debug_wb_data.bits, ldq(idx).bits.debug_wb_data.bits)
+        val wbdata_bl = Mux(commit_store, stq(idx).bits.debug_wb_data.blinded, ldq(idx).bits.debug_wb_data.blinded)
+        printf("MT %x %x %x %x %x | %x %x | %x %x\n",
+          io.core.tsc_reg, uop.uopc, uop.mem_cmd, uop.mem_size, addr, stdata_bl, stdata, wbdata_bl, wbdata)
       }
     }
 

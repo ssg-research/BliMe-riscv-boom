@@ -505,6 +505,25 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 
   // Exceptions
   io.resp.bits.fflags.valid := false.B
+
+  io.blinded_xcpt.valid       := false.B
+  io.blinded_xcpt.bits.cause  := (Causes.illegal_instruction).U
+
+  if (isJmpUnit) {
+    when (pc_sel === PC_JALR && io.req.bits.rs1_data.blinded)
+    {
+      printf("[alu] blinded_xcpt set to true - JALR\n")
+      io.blinded_xcpt.valid     := true.B
+      io.blinded_xcpt.bits.uop  := io.req.bits.uop
+    }
+  }
+  when (uop.is_br && (io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded))
+  {
+    printf("[alu] blinded_xcpt set to true - BR\n")
+    io.blinded_xcpt.valid     := true.B
+    io.blinded_xcpt.bits.uop  := io.req.bits.uop
+  }
+  
 }
 
 /**
@@ -543,7 +562,7 @@ class MemAddrCalcUnit(implicit p: Parameters)
 
   assert (!(io.req.bits.uop.fp_val && io.req.valid && io.req.bits.uop.uopc =/=
           uopLD && io.req.bits.uop.uopc =/= uopSTA 
-          && io.req.bits.uop.uopc =/= uopBLND_1 && io.req.bits.uop.uopc =/= uopRBLND_1),
+          && io.req.bits.uop.uopc =/= uopBLND && io.req.bits.uop.uopc =/= uopRBLND),
           "[maddrcalc] assert we never get store data in here.")
 
   // Handle misaligned exceptions
@@ -565,14 +584,17 @@ class MemAddrCalcUnit(implicit p: Parameters)
   io.blinded_xcpt.valid := io.req.valid && (io.req.bits.uop.uopc === uopLD     || 
                                             io.req.bits.uop.uopc === uopSTA    || 
                                             io.req.bits.uop.uopc === uopAMO_AG || 
-                                            io.req.bits.uop.uopc === uopBLND_1 || 
-                                            io.req.bits.uop.uopc === uopRBLND_1) && io.req.bits.rs1_data.blinded
+                                            io.req.bits.uop.uopc === uopBLND || 
+                                            io.req.bits.uop.uopc === uopRBLND) && io.req.bits.rs1_data.blinded
   io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
   io.blinded_xcpt.bits.uop   := io.req.bits.uop
+  when (io.blinded_xcpt.valid) {
+    printf("[memaddrcalc] blinded_xcpt set to true\n")
+  }
   
   
   val ma_ld  = io.req.valid && io.req.bits.uop.uopc === uopLD && misaligned
-  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG || io.req.bits.uop.uopc === uopBLND_1 || io.req.bits.uop.uopc === uopRBLND_1) && misaligned
+  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG || io.req.bits.uop.uopc === uopBLND || io.req.bits.uop.uopc === uopRBLND) && misaligned
   val dbg_bp = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.debug_ld) ||
                                 (io.req.bits.uop.uopc === uopSTA && bkptu.io.debug_st))
   val bp     = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.xcpt_ld) ||

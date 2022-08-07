@@ -397,6 +397,7 @@ class Rob(
       }
     }
     when (io.blinded_xcpt.valid && MatchBank(GetBankIdx(io.blinded_xcpt.bits.uop.rob_idx))) {
+      printf("[rob] Blinded exception set to true\n")
       rob_exception(GetRowIdx(io.blinded_xcpt.bits.uop.rob_idx)) := true.B
     }
     can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head)
@@ -634,9 +635,11 @@ class Rob(
 
   when (!(io.flush.valid || exception_thrown) && rob_state =/= s_rollback) {
     when (io.blinded_xcpt.valid) {
+      printf("[rob] Blinded exception val\n")
       val new_xcpt_uop = io.blinded_xcpt.bits.uop
 
       when (!r_xcpt_val || IsOlder(new_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
+        printf("[rob] Oldest exception is blinded exception\n")
         r_xcpt_val              := true.B
         next_xcpt_uop           := new_xcpt_uop
         next_xcpt_uop.exc_cause := io.blinded_xcpt.bits.cause
