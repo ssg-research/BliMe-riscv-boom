@@ -900,9 +900,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq(sidx).bits.data.bits  := Mux(will_fire_std_incoming(w) || will_fire_stad_incoming(w),
           exe_req(w).bits.data,
           io.core.fp_stdata.bits.data)
+        assert(!(stq(sidx).bits.data.valid),
+          "[lsu] Incoming store is overwriting a valid data entry")
       }
-      assert(!(stq(sidx).bits.data.valid),
-        "[lsu] Incoming store is overwriting a valid data entry")
     }
   }
   val will_fire_stdf_incoming = io.core.fp_stdata.fire
