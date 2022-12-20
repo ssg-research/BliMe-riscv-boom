@@ -258,8 +258,8 @@ trait ScalarOpConstants
 
   val uopMOV       = 109.U(UOPC_SZ.W) // conditional mov decoded from "add rd, x0, rs2"
 
-  val uopBLND    = 110.U(UOPC_SZ.W)
-  val uopRBLND   = 111.U(UOPC_SZ.W)
+  // val uopBLND    = 110.U(UOPC_SZ.W)
+  // val uopRBLND   = 111.U(UOPC_SZ.W)
 
   // The Bubble Instruction (Machine generated NOP)
   // Insert (XOR x0,x0,x0) which is different from software compiler

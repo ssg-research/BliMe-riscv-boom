@@ -1,0 +1,224 @@
+package boom.encengine
+
+import chisel3._
+import chisel3.util._
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.ArrayBuffer
+import scala.util.Random
+import Chisel.ImplicitConversions._
+import scala.collection.mutable.HashMap
+import freechips.rocketchip.tile.HasCoreParameters
+import freechips.rocketchip.rocket.constants.MemoryOpConstants
+import freechips.rocketchip.config._
+import freechips.rocketchip.rocket._
+import freechips.rocketchip.util.{BlindedMem,Blinded}
+
+class EECtrlModule()(implicit val p: Parameters) extends Module
+  with HasCoreParameters
+  with MemoryOpConstants {
+
+  val io = IO(new Bundle {
+    val rocc_req_val      = Input(Bool())
+    val rocc_req_rdy      = Output(Bool())
+    val rocc_funct        = Input(Bits(2.W))
+    val rocc_rs1          = Input(Blinded(Bits(64.W)))
+    val rocc_rs2          = Input(Blinded(Bits(64.W)))
+    val rocc_rd           = Input(Bits(5.W))
+
+    val busy              = Output(Bool())
+
+    val dmem_req_val      = Output(Bool())
+    val dmem_req_rdy      = Input(Bool())
+    val dmem_req_tag      = Output(Bits(coreParams.dcacheReqTagBits.W))
+    val dmem_req_addr     = Output(Bits(coreMaxAddrBits.W))
+    val dmem_req_cmd      = Output(Bits(M_SZ.W))
+    val dmem_req_size     = Output(Bits(log2Ceil(coreDataBytes + 1).W))
+    val dmem_req_data     = Output(BlindedMem(Bits(coreDataBits.W), Bits(coreDataBytes.W)))
+
+    val dmem_resp_val     = Input(Bool())
+    val dmem_resp_tag     = Input(Bits(7.W))
+    val dmem_resp_data    = Input(BlindedMem(Bits(coreDataBits.W), Bits(coreDataBytes.W)))
+
+    val sfence            = Output(Bool())
+
+    val session_key       = Input(UInt())
+    val init              = Output(Bool())
+
+    // val buffer_out  = Output(Bits(width.W))
+  })
+
+  // ###### things to move out of controller #######
+  // ks_buf length = 16, ks_buf width = 64
+  val ks_buf = Module(new Queue(UInt(64.W), 16))
+
+  // mem_buf length = 16, mem_buf width = 64
+  val mem_buf = Module(new MemBuf(16, false, false, false))
+
+  val chacha = Module(new ChaCha20)
+
+  // ###############################################
+
+  val start_addr = Mux(io.rocc_rs1.blinded, 0.U, io.rocc_rs1.bits)
+  val length     = Mux(io.rocc_rs2.blinded, 0.U, io.rocc_rs2.bits)
+
+  // val busy = RegInit(false.B)
+
+  // mem read req state machine signals
+  val mrq_init :: mrq_send :: mrq_done :: Nil = Enum(3)
+  val mrq_s = RegInit(mrq_init)
+  val current_read_addr = RegInit(0.U(start_addr.getWidth.W))
+  val read_tag = RegInit(0.U(io.dmem_req_tag.getWidth.W))
+  val block_read = Wire(Bool())
+  val last_block_read = RegNext(block_read)
+
+  // xor state machine signals
+  // val x_init :: x_write :: Nil = Enum(2) // this is redundant
+  // val x_s = RegInit(x_init)
+  val do_write = Wire(Bool())
+  val last_do_write = RegNext(do_write)
+  val current_write_addr = RegInit(0.U(start_addr.getWidth.W))
+  val write_index = RegInit(0.U(io.dmem_req_tag.getWidth.W))
+
+  // keystream req state machine signals
+  // val ksq_init :: ksq_gen :: Nil = Enum(2)
+  // val ksq_s = RegInit(ksq_init)
+  val session_key_width = p(EESessionKeyWidthP)
+  val session_key = Reg(Valid(UInt(session_key_width.W)))
+  session_key.bits := 0.U
+  session_key.valid := true.B
+
+  val cmd_complete = RegInit(false.B)
+  val busy = RegInit(false.B)
+
+  // default
+  io.busy := busy
+  io.rocc_req_rdy := false.B
+  io.init := false.B
+  io.dmem_req_val:= false.B
+  io.dmem_req_tag:= 0.U
+  io.dmem_req_addr:= 0.U
+  io.dmem_req_cmd:= M_XRD
+  io.dmem_req_size:= log2Ceil(8).U
+  io.dmem_req_data := DontCare
+  io.sfence      := false.B
+  mem_buf.io.side_data_valid_in := false.B
+  mem_buf.io.side_index_in := DontCare
+  mem_buf.io.side_data_in := DontCare
+  mem_buf.io.q.enq.valid := false.B
+  mem_buf.io.q.enq.bits := DontCare
+  mem_buf.io.q.deq.ready := false.B
+  ks_buf.io.deq.ready := false.B
+
+
+  // read and write ctrl signals
+  do_write := mem_buf.io.q.deq.valid && mem_buf.io.q.deq.bits.data_valid && ks_buf.io.deq.valid
+  block_read := do_write || !mem_buf.io.q.enq.ready
+
+  // keystream gen connections
+  ks_buf.io.enq <> chacha.io.resp
+  chacha.io.req.valid := session_key.valid
+  chacha.io.req.bits  := session_key.bits
+
+  def try_send_readreq(read_addr : UInt) = {
+    when (!block_read) {
+      // here, we assume the read req is sent
+      io.dmem_req_val   := true.B
+      io.dmem_req_addr  := read_addr
+      io.dmem_req_tag   := read_tag
+      io.dmem_req_cmd   := M_XRD
+
+      when (io.dmem_req_rdy) {
+        current_read_addr                 := read_addr + 8
+        read_tag                          := read_tag + 1
+
+        // save a slot in the membuf
+        mem_buf.io.q.enq.valid            := true.B
+        // mem_buf.io.q.enq.bits.addr        := read_addr
+        mem_buf.io.q.enq.bits.tag         := read_tag
+        mem_buf.io.q.enq.bits.data_valid  := false.B
+
+        when (read_addr === (start_addr + length - 8)) { // last read req
+          mrq_s := mrq_done
+        }
+      }
+    }
+  }
+
+  def send_writereq() = {
+    io.dmem_req_val     := true.B
+    io.dmem_req_addr    := start_addr + (mem_buf.io.q.deq.bits.tag * 8)
+    io.dmem_req_tag     := write_index
+    io.dmem_req_cmd     := M_XWR
+    io.dmem_req_data.bits       := mem_buf.io.q.deq.bits.data.bits ^ ks_buf.io.deq.bits
+    assert(mem_buf.io.q.deq.bits.data.blindmask.andR === mem_buf.io.q.deq.bits.data.blindmask.orR, "Assumption that blindmask bits are all the same is not true!")
+    io.dmem_req_data.blindmask  := ~mem_buf.io.q.deq.bits.data.blindmask
+
+    when (io.dmem_req_rdy) {
+      // current_write_addr      := start_addr + mem_buf.io.q.deq.bits.tag * 8
+      write_index             := write_index + 1
+      mem_buf.io.q.deq.ready  := true.B // dequeue top membuf element
+      ks_buf.io.deq.ready     := true.B // dequeue top ksbuf element
+
+      assert(mem_buf.io.q.deq.bits.tag * 8 <= length)
+
+      when (mem_buf.io.q.deq.bits.tag * 8 === (length - 8)) { // last write req. we assume addresses in membuf are in-order
+        cmd_complete := true.B
+      }
+    }
+  }
+
+  // mem read req state machine processing
+  switch(mrq_s) {
+  is(mrq_init) {
+    io.init := true.B
+    io.rocc_req_rdy := true.B
+    busy := false.B
+    current_read_addr := 0.U
+    read_tag := 0.U
+    when (io.rocc_req_val && length > 0) {
+      mrq_s := mrq_send
+      try_send_readreq(start_addr)
+      io.rocc_req_rdy := false.B
+      busy := true.B
+    }
+  }
+  is(mrq_send) {
+    try_send_readreq(current_read_addr)
+  }
+  is(mrq_done) {
+    when (cmd_complete) {
+      mrq_s := mrq_init
+      cmd_complete := false.B
+      io.rocc_req_rdy := true.B
+    }
+  }
+  }
+
+  // xor and write
+  when (io.rocc_req_val && do_write) {
+    send_writereq()
+  }
+
+  // mem resp handling: reads and writes
+  when (io.dmem_resp_val) {
+    // when (io.dmem_resp_tag <= write_index) {
+      // read response
+      val membuf_idx = Wire(Valid(UInt()))
+      membuf_idx.valid := false.B
+      membuf_idx.bits := 0.U
+      // membuf_idx := MuxLookup(io.dmem_resp_tag, 0.U, mem_buf.io.all_addrs_out.zipWithIndex.map{case (addr, i) => 
+      mem_buf.io.all_tags_out.zipWithIndex.foreach{case (tag, i) => 
+        when (tag.valid && tag.bits === io.dmem_resp_tag) {
+          membuf_idx.valid := true.B
+          membuf_idx.bits := i.U
+        }
+      }
+      // assert(membuf_idx.valid, "[ee-ctrl] mem resp does not have a corresponding slot in membuf!")
+      mem_buf.io.side_index_in := membuf_idx.bits
+      mem_buf.io.side_data_in := io.dmem_resp_data
+      mem_buf.io.side_data_valid_in := membuf_idx.valid
+    // }
+    // otherwise (write resp), do nothing
+    // TODO wait until all write responses are recv'd before raising cmd_complete
+  }
+}

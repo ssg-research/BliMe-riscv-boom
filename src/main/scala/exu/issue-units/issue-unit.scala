@@ -125,8 +125,9 @@ abstract class IssueUnit(
     if (iqType == IQT_MEM.litValue || iqType == IQT_INT.litValue) {
       // For StoreAddrGen for Int, or AMOAddrGen, we go to addr gen state
       when ((io.dis_uops(w).bits.uopc === uopSTA && io.dis_uops(w).bits.lrs2_rtype === RT_FIX) ||
-             io.dis_uops(w).bits.uopc === uopAMO_AG ||
-             io.dis_uops(w).bits.uopc === uopBLND || io.dis_uops(w).bits.uopc === uopRBLND) {
+             io.dis_uops(w).bits.uopc === uopAMO_AG //||
+            //  io.dis_uops(w).bits.uopc === uopBLND || io.dis_uops(w).bits.uopc === uopRBLND
+             ) {
         dis_uops(w).iw_state := s_valid_2
         // For store addr gen for FP, rs2 is the FP register, and we don't wait for that here
       } .elsewhen (io.dis_uops(w).bits.uopc === uopSTA && io.dis_uops(w).bits.lrs2_rtype =/= RT_FIX) {
