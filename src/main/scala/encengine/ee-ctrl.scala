@@ -59,7 +59,7 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
   // ###############################################
 
   val start_addr = Mux(io.rocc_rs1.blinded, 0.U, io.rocc_rs1.bits)
-  val length     = Mux(io.rocc_rs2.blinded, 0.U, io.rocc_rs2.bits)
+  val length     = Mux(io.rocc_rs2.blinded, 0.U, io.rocc_rs2.bits) // NB: We assume length is always a multiple of 8
 
   // val busy = RegInit(false.B)
 
@@ -77,7 +77,7 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
   val do_write = Wire(Bool())
   val last_do_write = RegNext(do_write)
   val current_write_addr = RegInit(0.U(start_addr.getWidth.W))
-  val write_index = RegInit(0.U(io.dmem_req_tag.getWidth.W))
+  val write_tag = RegInit(0.U(io.dmem_req_tag.getWidth.W))
 
   // keystream req state machine signals
   // val ksq_init :: ksq_gen :: Nil = Enum(2)
@@ -130,6 +130,9 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
       when (io.dmem_req_rdy) {
         current_read_addr                 := read_addr + 8
         read_tag                          := read_tag + 1
+        // when (read_tag === Fill(io.dmem_req_tag.getWidth, 1.U)) {
+        //   read_tag := 1.U
+        // }
 
         // save a slot in the membuf
         mem_buf.io.q.enq.valid            := true.B
@@ -144,24 +147,27 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
     }
   }
 
-  def send_writereq() = {
+  def send_writereq(write_addr : UInt) = {
     io.dmem_req_val     := true.B
-    io.dmem_req_addr    := start_addr + (mem_buf.io.q.deq.bits.tag * 8)
-    io.dmem_req_tag     := write_index
+    io.dmem_req_addr    := write_addr //start_addr + (mem_buf.io.q.deq.bits.tag * 8)
+    io.dmem_req_tag     := write_tag
     io.dmem_req_cmd     := M_XWR
     io.dmem_req_data.bits       := mem_buf.io.q.deq.bits.data.bits ^ ks_buf.io.deq.bits
     assert(mem_buf.io.q.deq.bits.data.blindmask.andR === mem_buf.io.q.deq.bits.data.blindmask.orR, "Assumption that blindmask bits are all the same is not true!")
     io.dmem_req_data.blindmask  := ~mem_buf.io.q.deq.bits.data.blindmask
 
     when (io.dmem_req_rdy) {
-      // current_write_addr      := start_addr + mem_buf.io.q.deq.bits.tag * 8
-      write_index             := write_index + 1
+      current_write_addr      := write_addr + 8 //start_addr + mem_buf.io.q.deq.bits.tag * 8
+      write_tag               := write_tag + 1
+      // when (write_tag === Fill(io.dmem_req_tag.getWidth, 1.U)) {
+      //   write_tag := 1.U
+      // }
       mem_buf.io.q.deq.ready  := true.B // dequeue top membuf element
       ks_buf.io.deq.ready     := true.B // dequeue top ksbuf element
 
-      assert(mem_buf.io.q.deq.bits.tag * 8 <= length)
+      assert(current_write_addr <= start_addr + length)
 
-      when (mem_buf.io.q.deq.bits.tag * 8 === (length - 8)) { // last write req. we assume addresses in membuf are in-order
+      when (current_write_addr === (start_addr + length - 8)) { // last write req. we assume addresses in membuf are in-order
         cmd_complete := true.B
       }
     }
@@ -174,10 +180,12 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
     io.rocc_req_rdy := true.B
     busy := false.B
     current_read_addr := 0.U
+    current_write_addr := 0.U
     read_tag := 0.U
     when (io.rocc_req_val && length > 0) {
       mrq_s := mrq_send
       try_send_readreq(start_addr)
+      current_write_addr := start_addr
       io.rocc_req_rdy := false.B
       busy := true.B
     }
@@ -196,7 +204,7 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
 
   // xor and write
   when (io.rocc_req_val && do_write) {
-    send_writereq()
+    send_writereq(current_write_addr)
   }
 
   // mem resp handling: reads and writes
@@ -219,6 +227,5 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
       mem_buf.io.side_data_valid_in := membuf_idx.valid
     // }
     // otherwise (write resp), do nothing
-    // TODO wait until all write responses are recv'd before raising cmd_complete
   }
 }
