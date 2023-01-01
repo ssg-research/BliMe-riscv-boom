@@ -284,8 +284,8 @@ object XDecode extends DecodeConstants
   SC_W    -> List(Y, N, X, uopAMO_AG, IQT_MEM, FU_MEM, RT_FIX, RT_FIX, RT_FIX, N, IS_X, N, Y, Y, N, N, M_XSC   , 0.U,N, N, N, Y, Y, CSR.N),
   SC_D    -> List(Y, N, X, uopAMO_AG, IQT_MEM, FU_MEM, RT_FIX, RT_FIX, RT_FIX, N, IS_X, N, Y, Y, N, N, M_XSC   , 0.U,N, N, N, Y, Y, CSR.N),
 
-  BLND    -> List(Y, N, X, uopBLND , IQT_MEM, FU_MEM, RT_X  , RT_FIX, RT_X  , N, IS_S, N, Y, N, N, N, M_XWR   , 0.U, N, N, N, N, N, CSR.N),
-  RBLND   -> List(Y, N, X, uopRBLND, IQT_MEM, FU_MEM, RT_X  , RT_FIX, RT_X  , N, IS_S, N, Y, N, N, N, M_XWR   , 0.U, N, N, N, N, N, CSR.N)
+  // BLND    -> List(Y, N, X, uopBLND , IQT_MEM, FU_MEM, RT_X  , RT_FIX, RT_X  , N, IS_S, N, Y, N, N, N, M_XWR   , 0.U, N, N, N, N, N, CSR.N),
+  // RBLND   -> List(Y, N, X, uopRBLND, IQT_MEM, FU_MEM, RT_X  , RT_FIX, RT_X  , N, IS_S, N, Y, N, N, N, M_XWR   , 0.U, N, N, N, N, N, CSR.N)
   )
 }
 

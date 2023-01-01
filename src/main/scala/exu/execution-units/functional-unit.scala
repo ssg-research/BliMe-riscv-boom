@@ -562,7 +562,8 @@ class MemAddrCalcUnit(implicit p: Parameters)
 
   assert (!(io.req.bits.uop.fp_val && io.req.valid && io.req.bits.uop.uopc =/=
           uopLD && io.req.bits.uop.uopc =/= uopSTA 
-          && io.req.bits.uop.uopc =/= uopBLND && io.req.bits.uop.uopc =/= uopRBLND),
+          // && io.req.bits.uop.uopc =/= uopBLND && io.req.bits.uop.uopc =/= uopRBLND
+          ),
           "[maddrcalc] assert we never get store data in here.")
 
   // Handle misaligned exceptions
@@ -583,9 +584,10 @@ class MemAddrCalcUnit(implicit p: Parameters)
   // storing or loading using a blinded addr
   io.blinded_xcpt.valid := io.req.valid && (io.req.bits.uop.uopc === uopLD     || 
                                             io.req.bits.uop.uopc === uopSTA    || 
-                                            io.req.bits.uop.uopc === uopAMO_AG || 
-                                            io.req.bits.uop.uopc === uopBLND || 
-                                            io.req.bits.uop.uopc === uopRBLND) && io.req.bits.rs1_data.blinded
+                                            io.req.bits.uop.uopc === uopAMO_AG //|| 
+                                            // io.req.bits.uop.uopc === uopBLND || 
+                                            // io.req.bits.uop.uopc === uopRBLND
+                                            ) && io.req.bits.rs1_data.blinded
   io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
   io.blinded_xcpt.bits.uop   := io.req.bits.uop
   when (io.blinded_xcpt.valid) {
@@ -594,7 +596,7 @@ class MemAddrCalcUnit(implicit p: Parameters)
   
   
   val ma_ld  = io.req.valid && io.req.bits.uop.uopc === uopLD && misaligned
-  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG || io.req.bits.uop.uopc === uopBLND || io.req.bits.uop.uopc === uopRBLND) && misaligned
+  val ma_st  = io.req.valid && (io.req.bits.uop.uopc === uopSTA || io.req.bits.uop.uopc === uopAMO_AG /*|| io.req.bits.uop.uopc === uopBLND || io.req.bits.uop.uopc === uopRBLND*/) && misaligned
   val dbg_bp = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.debug_ld) ||
                                 (io.req.bits.uop.uopc === uopSTA && bkptu.io.debug_st))
   val bp     = io.req.valid && ((io.req.bits.uop.uopc === uopLD  && bkptu.io.xcpt_ld) ||

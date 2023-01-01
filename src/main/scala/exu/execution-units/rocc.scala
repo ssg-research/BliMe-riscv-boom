@@ -18,6 +18,7 @@ import chisel3.util._
 import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.tile.{RoCCCoreIO, RoCCInstruction}
 import freechips.rocketchip.rocket._
+import freechips.rocketchip.util.Blinded
 
 import boom.common._
 import boom.util._
@@ -71,8 +72,8 @@ class RoCCShim(implicit p: Parameters) extends BoomModule
   val rxq_committed = Reg(Vec(numRxqEntries, Bool()))
   val rxq_uop       = Reg(Vec(numRxqEntries, new MicroOp()))
   val rxq_inst      = Reg(Vec(numRxqEntries, UInt(32.W)))
-  val rxq_rs1       = Reg(Vec(numRxqEntries, UInt(xLen.W)))
-  val rxq_rs2       = Reg(Vec(numRxqEntries, UInt(xLen.W)))
+  val rxq_rs1       = Reg(Vec(numRxqEntries, Blinded(UInt(xLen.W))))
+  val rxq_rs2       = Reg(Vec(numRxqEntries, Blinded(UInt(xLen.W))))
 
   // RoCC commit queue. Wait for response, or immediate unbusy
   val rcq           = Module(new Queue(new MicroOp(), numRcqEntries))
