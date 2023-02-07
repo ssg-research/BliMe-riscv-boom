@@ -105,7 +105,7 @@ class EncryptionEngineRoCCModule(outer: EncryptionEngineRoCC)
 }
 
 class WithEncEngine extends Config ((site, here, up) => {
-  case EESessionKeyWidthP => 128
+  case EESessionKeyWidthP => 256
   case EEFastMem => true
   case EEBufferSram => false
   case EncEngineTLB => Some(TLBConfig(nSets = 1, nWays = 4, nSectors = 1, nSuperpageEntries = 1))
