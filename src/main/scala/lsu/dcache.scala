@@ -28,7 +28,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
     val resp = Output(Bool())
     val idx = Output(Valid(UInt()))
     val data_req = Decoupled(new L1DataReadReq)
-    val data_resp = Input(BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))
+    val data_resp = Input(BlindedMem(UInt(encRowBits.W), rowWords))
     val mem_grant = Input(Bool())
     val release = Decoupled(new TLBundleC(edge.bundle))
     val lsu_release = Decoupled(new TLBundleC(edge.bundle))
@@ -43,7 +43,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   val r2_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
   val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.release)
-  val wb_buffer = Reg(Vec(refillCycles, BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
+  val wb_buffer = Reg(Vec(refillCycles, BlindedMem(UInt(encRowBits.W), rowWords)))
   val acked = RegInit(false.B)
 
   io.idx.valid       := state =/= s_invalid
@@ -67,14 +67,14 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
                           toAddress = r_address,
                           lgSize = lgCacheBlockBytes.U,
                           reportPermissions = req.param,
-                          data = Cat(wb_buffer(data_req_cnt).blindmask, wb_buffer(data_req_cnt).bits))
+                          data = Cat(wb_buffer(data_req_cnt).clTags.asUInt, wb_buffer(data_req_cnt).bits))
 
   val voluntaryRelease = edge.Release(
                           fromSource = id.U,
                           toAddress = r_address,
                           lgSize = lgCacheBlockBytes.U,
                           shrinkPermissions = req.param,
-                          data = Cat(wb_buffer(data_req_cnt).blindmask, wb_buffer(data_req_cnt).bits))._2
+                          data = Cat(wb_buffer(data_req_cnt).clTags.asUInt, wb_buffer(data_req_cnt).bits))._2
 
 
   when (state === s_invalid) {
@@ -268,8 +268,9 @@ abstract class AbstractBoomDataArray(implicit p: Parameters) extends BoomModule 
   val io = IO(new BoomBundle {
     val read  = Input(Vec(memWidth, Valid(new L1DataReadReq)))
     val write = Input(Valid(new L1DataWriteReq))
-    val resp  = Output(Vec(memWidth, Vec(nWays, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W)))))
+    val resp  = Output(Vec(memWidth, Vec(nWays, BlindedMem(Bits(encRowBits.W), rowWords))))
     val nacks = Output(Vec(memWidth, Bool()))
+    val blinded_xcpt = Output(Bool())
   })
 
   def pipeMap[T <: Data](f: Int => T) = VecInit((0 until memWidth).map(f))
@@ -278,126 +279,158 @@ abstract class AbstractBoomDataArray(implicit p: Parameters) extends BoomModule 
 
 class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataArray
 {
+  val s1_blinded_xcpt = Wire(Bool())
+  s1_blinded_xcpt := false.B
+  io.blinded_xcpt := RegNext(s1_blinded_xcpt)
+  when (s1_blinded_xcpt) {
+    printf("[dcache] [data] Blinded exception set to true.\n")
+  }
 
   val waddr = io.write.bits.addr >> rowOffBits
+  val cltagWAddr = io.write.bits.addr >> BlindedMem.CL_TAG_OFFSET_BITS
   for (j <- 0 until memWidth) {
-
+    
     val raddr = io.read(j).bits.addr >> rowOffBits
+    val cltagRAddr = io.read(j).bits.addr >> BlindedMem.CL_TAG_OFFSET_BITS
     for (w <- 0 until nWays) {
+      val clTagArray = RegInit(VecInit(Seq.fill(nSets * refillCycles * rowWords)(0.U(Blinded.CL_TAG_SIZE.W))))
       val dataArray = DescribedSRAM(
         name = s"dataArray_${w}_${j}",
         desc = "Non-blocking DCache Data Array",
         size = nSets * refillCycles,
         data = Vec(rowWords, Bits(encDataBits.W))
       )
-      val blindmaskArray = DescribedSRAM(
-        name = s"blindmaskArray_${w}_${j}",
-        desc = "Non-blocking DCache Data Array",
-        size = nSets * refillCycles,
-        data = Vec(rowWords, Bits(coreDataBytes.W))
-      )
+      // val blindmaskArray = DescribedSRAM(
+      //   name = s"clTagArray_${w}_${j}",
+      //   desc = "Non-blocking DCache Data Array Tags (1 per row)",
+      //   size = nSets * refillCycles,
+      //   data = Bits(Blinded.CL_TAG_SIZE.W)
+      // )
+
+      val write_blinded_xcpt = WireDefault(false.B)
+      
       when (io.write.bits.way_en(w) && io.write.valid) {
-        val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
-        val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
-        when (!io.write.bits.blindedOnly) {
-          dataArray.write(waddr, data, io.write.bits.wmask.asBools)
+        assert(io.write.bits.wmask.orR)
+        when (!io.write.bits.wmask.andR) { // i.e., when partial row write is wanted
+          io.write.bits.data.clTags.zipWithIndex.foreach{case (incomingClTag,i) => 
+            val oldClTag = clTagArray(cltagWAddr + i.U)
+            when ((oldClTag =/= 0.U) && (oldClTag =/= incomingClTag)) {
+              write_blinded_xcpt := true.B
+            }
+          }
         }
-        blindmaskArray.write(waddr, blindmask, io.write.bits.wmask.asBools)
+        when (!write_blinded_xcpt) {
+          val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
+          // val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
+          when (!io.write.bits.blindedOnly) {
+            dataArray.write(waddr, data, io.write.bits.wmask.asBools)
+          }
+          io.write.bits.data.clTags.zipWithIndex.foreach{case (incomingClTag,i) => 
+            clTagArray(cltagWAddr + i.U) := incomingClTag
+          }
+        } .otherwise {
+          s1_blinded_xcpt := true.B
+        }
       }
-      // val readRow = array.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid)
-      // val readRowBits = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits-1, 0)))
-      // val readRowMask = VecInit((0 until rowWords) map (i => readRow(i)(encDataBits+coreDataBytes-1, encDataBits)))
-      val readRow_wire = Wire(BlindedMem(UInt(encDataBits.W), UInt(coreDataBytes.W)))
+      
+      val readRow_wire = Wire(BlindedMem(UInt(encRowBits.W), rowWords))
       readRow_wire.bits := dataArray.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt
-      readRow_wire.blindmask := blindmaskArray.read(raddr, io.read(j).bits.way_en(w) && io.read(j).valid).asUInt
+      when (io.read(j).bits.way_en(w) && io.read(j).valid) {
+        assert(readRow_wire.clTags.size == 1) // TODO the for loop below will not work with other sizes. need to update later.
+        for (i <- 0 until readRow_wire.clTags.size) {
+          readRow_wire.clTags(i) := RegNext(clTagArray(cltagRAddr + i.U))
+        }
+      } .otherwise {
+        readRow_wire.clTags.map{t => t := 0.U}
+      }
       io.resp(j)(w) := RegNext(readRow_wire)
     }
     io.nacks(j) := false.B
   }
 }
 
-class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray {
+// class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray {
 
-  val nBanks   = boomParams.numDCacheBanks
-  val bankSize = nSets * refillCycles / nBanks
-  require (nBanks >= memWidth)
-  require (bankSize > 0)
+//   val nBanks   = boomParams.numDCacheBanks
+//   val bankSize = nSets * refillCycles / nBanks
+//   require (nBanks >= memWidth)
+//   require (bankSize > 0)
 
-  val bankBits    = log2Ceil(nBanks)
-  val bankOffBits = log2Ceil(rowWords) + log2Ceil(wordBytes)
-  val bidxBits    = log2Ceil(bankSize)
-  val bidxOffBits = bankOffBits + bankBits
+//   val bankBits    = log2Ceil(nBanks)
+//   val bankOffBits = log2Ceil(rowWords) + log2Ceil(wordBytes)
+//   val bidxBits    = log2Ceil(bankSize)
+//   val bidxOffBits = bankOffBits + bankBits
 
-  //----------------------------------------------------------------------------------------------------
+//   //----------------------------------------------------------------------------------------------------
 
-  val s0_rbanks = if (nBanks > 1) VecInit(io.read.map(r => (r.bits.addr >> bankOffBits)(bankBits-1,0))) else VecInit(0.U)
-  val s0_wbank  = if (nBanks > 1) (io.write.bits.addr >> bankOffBits)(bankBits-1,0) else 0.U
-  val s0_ridxs  = VecInit(io.read.map(r => (r.bits.addr >> bidxOffBits)(bidxBits-1,0)))
-  val s0_widx   = (io.write.bits.addr >> bidxOffBits)(bidxBits-1,0)
+//   val s0_rbanks = if (nBanks > 1) VecInit(io.read.map(r => (r.bits.addr >> bankOffBits)(bankBits-1,0))) else VecInit(0.U)
+//   val s0_wbank  = if (nBanks > 1) (io.write.bits.addr >> bankOffBits)(bankBits-1,0) else 0.U
+//   val s0_ridxs  = VecInit(io.read.map(r => (r.bits.addr >> bidxOffBits)(bidxBits-1,0)))
+//   val s0_widx   = (io.write.bits.addr >> bidxOffBits)(bidxBits-1,0)
 
-  val s0_read_valids    = VecInit(io.read.map(_.valid))
-  val s0_bank_conflicts = pipeMap(w => (0 until w).foldLeft(false.B)((c,i) => c || io.read(i).valid && s0_rbanks(i) === s0_rbanks(w)))
-  val s0_do_bank_read   = s0_read_valids zip s0_bank_conflicts map {case (v,c) => v && !c}
-  val s0_bank_read_gnts = Transpose(VecInit(s0_rbanks zip s0_do_bank_read map {case (b,d) => VecInit((UIntToOH(b) & Fill(nBanks,d)).asBools)}))
-  val s0_bank_write_gnt = (UIntToOH(s0_wbank) & Fill(nBanks, io.write.valid)).asBools
+//   val s0_read_valids    = VecInit(io.read.map(_.valid))
+//   val s0_bank_conflicts = pipeMap(w => (0 until w).foldLeft(false.B)((c,i) => c || io.read(i).valid && s0_rbanks(i) === s0_rbanks(w)))
+//   val s0_do_bank_read   = s0_read_valids zip s0_bank_conflicts map {case (v,c) => v && !c}
+//   val s0_bank_read_gnts = Transpose(VecInit(s0_rbanks zip s0_do_bank_read map {case (b,d) => VecInit((UIntToOH(b) & Fill(nBanks,d)).asBools)}))
+//   val s0_bank_write_gnt = (UIntToOH(s0_wbank) & Fill(nBanks, io.write.valid)).asBools
 
-  //----------------------------------------------------------------------------------------------------
+//   //----------------------------------------------------------------------------------------------------
 
-  val s1_rbanks         = RegNext(s0_rbanks)
-  val s1_ridxs          = RegNext(s0_ridxs)
-  val s1_read_valids    = RegNext(s0_read_valids)
-  val s1_pipe_selection = pipeMap(i => VecInit(PriorityEncoderOH(pipeMap(j =>
-                            if (j < i) s1_read_valids(j) && s1_rbanks(j) === s1_rbanks(i)
-                            else if (j == i) true.B else false.B))))
-  val s1_ridx_match     = pipeMap(i => pipeMap(j => if (j < i) s1_ridxs(j) === s1_ridxs(i)
-                                                    else if (j == i) true.B else false.B))
-  val s1_nacks          = pipeMap(w => s1_read_valids(w) && (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
-  val s1_bank_selection = pipeMap(w => Mux1H(s1_pipe_selection(w), s1_rbanks))
+//   val s1_rbanks         = RegNext(s0_rbanks)
+//   val s1_ridxs          = RegNext(s0_ridxs)
+//   val s1_read_valids    = RegNext(s0_read_valids)
+//   val s1_pipe_selection = pipeMap(i => VecInit(PriorityEncoderOH(pipeMap(j =>
+//                             if (j < i) s1_read_valids(j) && s1_rbanks(j) === s1_rbanks(i)
+//                             else if (j == i) true.B else false.B))))
+//   val s1_ridx_match     = pipeMap(i => pipeMap(j => if (j < i) s1_ridxs(j) === s1_ridxs(i)
+//                                                     else if (j == i) true.B else false.B))
+//   val s1_nacks          = pipeMap(w => s1_read_valids(w) && (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
+//   val s1_bank_selection = pipeMap(w => Mux1H(s1_pipe_selection(w), s1_rbanks))
 
-  //----------------------------------------------------------------------------------------------------
+//   //----------------------------------------------------------------------------------------------------
 
-  val s2_bank_selection = RegNext(s1_bank_selection)
-  val s2_nacks          = RegNext(s1_nacks)
+//   val s2_bank_selection = RegNext(s1_bank_selection)
+//   val s2_nacks          = RegNext(s1_nacks)
 
-  for (w <- 0 until nWays) {
-    val s2_bank_reads = Reg(Vec(nBanks, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
+//   for (w <- 0 until nWays) {
+//     val s2_bank_reads = Reg(Vec(nBanks, BlindedMem(Bits(encRowBits.W), Bits((coreDataBytes*rowWords).W))))
 
-    for (b <- 0 until nBanks) {
-      val dataArray = DescribedSRAM(
-        name = s"dataArray_${w}_${b}",
-        desc = "Non-blocking DCache Data Array",
-        size = bankSize,
-        data = Vec(rowWords, Bits(encDataBits.W))
-      )
-      val blindmaskArray = DescribedSRAM(
-        name = s"blindmaskArray_${w}_${b}",
-        desc = "Non-blocking DCache Data Array",
-        size = bankSize,
-        data = Vec(rowWords, Bits(coreDataBytes.W))
-      )
-      val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
-      val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.bits.way_en))
-      s2_bank_reads(b).bits := dataArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
-      s2_bank_reads(b).blindmask := blindmaskArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
+//     for (b <- 0 until nBanks) {
+//       val dataArray = DescribedSRAM(
+//         name = s"dataArray_${w}_${b}",
+//         desc = "Non-blocking DCache Data Array",
+//         size = bankSize,
+//         data = Vec(rowWords, Bits(encDataBits.W))
+//       )
+//       val blindmaskArray = DescribedSRAM(
+//         name = s"blindmaskArray_${w}_${b}",
+//         desc = "Non-blocking DCache Data Array",
+//         size = bankSize,
+//         data = Vec(rowWords, Bits(coreDataBytes.W))
+//       )
+//       val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
+//       val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.bits.way_en))
+//       s2_bank_reads(b).bits := dataArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
+//       s2_bank_reads(b).blindmask := blindmaskArray.read(ridx, way_en(w) && s0_bank_read_gnts(b).reduce(_||_)).asUInt
 
-      when (io.write.bits.way_en(w) && s0_bank_write_gnt(b)) {
-        val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
-        val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
-        // val data = VecInit((0 until rowWords) map (i => BlindedMem(io.write.bits.data.bits(encData))))
-        when (!io.write.bits.blindedOnly) {
-          dataArray.write(s0_widx, data, io.write.bits.wmask.asBools)
-        }
-        blindmaskArray.write(s0_widx, blindmask, io.write.bits.wmask.asBools)
-      }
-    }
+//       when (io.write.bits.way_en(w) && s0_bank_write_gnt(b)) {
+//         val data = VecInit((0 until rowWords) map (i => io.write.bits.data.bits(encDataBits*(i+1)-1,encDataBits*i)))
+//         val blindmask = VecInit((0 until rowWords) map (i => io.write.bits.data.blindmask(coreDataBytes*(i+1)-1, coreDataBytes*i)))
+//         // val data = VecInit((0 until rowWords) map (i => BlindedMem(io.write.bits.data.bits(encData))))
+//         when (!io.write.bits.blindedOnly) {
+//           dataArray.write(s0_widx, data, io.write.bits.wmask.asBools)
+//         }
+//         blindmaskArray.write(s0_widx, blindmask, io.write.bits.wmask.asBools)
+//       }
+//     }
 
-    for (i <- 0 until memWidth) {
-      io.resp(i)(w) := s2_bank_reads(s2_bank_selection(i))
-    }
-  }
+//     for (i <- 0 until memWidth) {
+//       io.resp(i)(w) := s2_bank_reads(s2_bank_selection(i))
+//     }
+//   }
 
-  io.nacks := s2_nacks
-}
+//   io.nacks := s2_nacks
+// }
 
 /**
  * Top level class wrapping a non-blocking dcache.
@@ -484,7 +517,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   metaWriteArb.io.out.ready := meta.map(_.io.write.ready).reduce(_||_)
 
   // data
-  val data = Module(if (boomParams.numDCacheBanks == 1) new BoomDuplicatedDataArray else new BoomBankedDataArray)
+  // val data = Module(if (boomParams.numDCacheBanks == 1) new BoomDuplicatedDataArray else new BoomBankedDataArray)
+  val data = Module(new BoomDuplicatedDataArray)
   val dataWriteArb = Module(new Arbiter(new L1DataWriteReq, 2))
   // 0 goes to pipeline, 1 goes to MSHR refills
   val dataReadArb = Module(new Arbiter(new BoomL1DataReadReq, 3))
@@ -729,7 +763,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   }
   assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
 
-  val s2_data = Wire(Vec(memWidth, Vec(nWays, BlindedMem(UInt(encRowBits.W), Bits((coreDataBytes*rowWords).W)))))
+  val s2_data = Wire(Vec(memWidth, Vec(nWays, BlindedMem(UInt(encRowBits.W), rowWords))))
   for (i <- 0 until memWidth) {
     for (w <- 0 until nWays) {
       s2_data(i)(w) := data.io.resp(i)(w)
@@ -762,6 +796,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val s2_send_nack = widthMap(w => (RegNext(s1_send_resp_or_nack(w)) && s2_nack(w)))
   for (w <- 0 until memWidth)
     assert(!(s2_send_resp(w) && s2_send_nack(w)))
+  
+  val s2_blinded_xcpt = data.io.blinded_xcpt
 
   // hits always send a response
   // If MSHR is not available, LSU has to replay this request later
@@ -849,28 +885,30 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   io.lsu.perf.acquire := edge.done(tl_out.a)
 
   // load data gen
-  val s2_data_word_prebypass = Wire(Vec(memWidth, BlindedMem(UInt(), UInt())))
+  val s2_data_word_prebypass = Wire(Vec(memWidth, BlindedMem(UInt(wordBits.W), 1)))
   for (w <- 0 until memWidth) {
     s2_data_word_prebypass(w).bits       := (s2_data_muxed(w).bits       >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits).W)))
-    s2_data_word_prebypass(w).blindmask  := (s2_data_muxed(w).blindmask  >> Cat(s2_word_idx(w), 0.U(log2Ceil(coreDataBits/8).W)))
+    for (t <- 0 until tagsPerWord) {
+      s2_data_word_prebypass(w).clTags(t)     := s2_data_muxed(w).clTags((s2_word_idx(w) * tagsPerWord.U) + t.U)
+    }
   }
   // for (w <- 0 until memWidth) {
   //   assert(s2_data_word_prebypass(w).blindmask.orR === s2_data_word_prebypass(w).blindmask.andR)
   // }
-  val s2_data_word = Wire(Vec(memWidth, BlindedMem(UInt(wordBits.W), UInt(wordBytes.W))))
+  val s2_data_word = Wire(Vec(memWidth, BlindedMem(UInt(wordBits.W), 1)))
 
   val loadgen_data = (0 until memWidth).map { w =>
     new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
                 s2_data_word(w).bits, s2_sc && (w == 0).B, wordBytes)
   }
 
-  val loadgen_blindmask = (0 until memWidth).map { w =>
-    new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
-                FillInterleaved(8, s2_data_word(w).blindmask), s2_sc && (w == 0).B, wordBytes)
-  }
-  for (w <- 0 until memWidth) {
-    assert(loadgen_blindmask(w).data(7,0).orR === loadgen_blindmask(w).data(7,0).andR) // all bits of loadgen_blindmask(w).data must be equal?
-  }
+  // val loadgen_blindmask = (0 until memWidth).map { w =>
+  //   new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
+  //               FillInterleaved(8, s2_data_word(w).blindmask), s2_sc && (w == 0).B, wordBytes)
+  // }
+  // for (w <- 0 until memWidth) {
+  //   assert(loadgen_blindmask(w).data(7,0).orR === loadgen_blindmask(w).data(7,0).andR) // all bits of loadgen_blindmask(w).data must be equal?
+  // }
 
   // Mux between cache responses and uncache responses
   val cache_resp   = Wire(Vec(memWidth, Valid(new BoomDCacheResp)))
@@ -878,7 +916,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
     cache_resp(w).valid         := s2_valid(w) && s2_send_resp(w)
     cache_resp(w).bits.uop      := s2_req(w).uop
     cache_resp(w).bits.data.bits     := loadgen_data(w).data | s2_sc_fail
-    cache_resp(w).bits.data.blinded  := loadgen_blindmask(w).data(0)
+    cache_resp(w).bits.data.clTag    := s2_data_word(w).clTags(0) //loadgen_blindmask(w).data(0)
     cache_resp(w).bits.is_hella := s2_req(w).is_hella
   }
 
@@ -930,15 +968,15 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val s4_bypass = widthMap(w => s4_valid && !s4_req.blindedOnly && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
   val s5_bypass = widthMap(w => s5_valid && !s5_req.blindedOnly && ((s2_req(w).addr >> wordOffBits) === (s5_req.addr >> wordOffBits)))
 
-  val s3_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  val s3_req_blindmem = Wire(BlindedMem(UInt(wordBits.W), 1))
   s3_req_blindmem.bits := s3_req.data.bits
-  s3_req_blindmem.blindmask := Fill(wordBytes, s3_req.data.blinded)
-  val s4_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  s3_req_blindmem.clTags(0) := s3_req.data.clTag //Fill(wordBytes, s3_req.data.blinded)
+  val s4_req_blindmem = Wire(BlindedMem(UInt(wordBits.W), 1))
   s4_req_blindmem.bits := s4_req.data.bits
-  s4_req_blindmem.blindmask := Fill(wordBytes, s4_req.data.blinded)
-  val s5_req_blindmem = Wire(BlindedMem(UInt(), UInt()))
+  s4_req_blindmem.clTags(0) := s4_req.data.clTag //Fill(wordBytes, s4_req.data.blinded)
+  val s5_req_blindmem = Wire(BlindedMem(UInt(wordBits.W), 1))
   s5_req_blindmem.bits := s5_req.data.bits
-  s5_req_blindmem.blindmask := Fill(wordBytes, s5_req.data.blinded)
+  s5_req_blindmem.clTags(0) := s5_req.data.clTag //Fill(wordBytes, s5_req.data.blinded)
 
   // Store -> Load bypassing
   for (w <- 0 until memWidth) {
@@ -952,19 +990,26 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   amoalu.io.cmd  := s2_req(0).uop.mem_cmd
   amoalu.io.lhs  := s2_data_word(0)
   amoalu.io.rhs.bits  := s2_req(0).data.bits
-  amoalu.io.rhs.blindmask  := Fill(8, s2_req(0).data.blinded)
+  amoalu.io.rhs.clTags(0)  := s2_req(0).data.clTag //Fill(8, s2_req(0).data.blinded)
 
 
   s3_req.data.bits := amoalu.io.out.bits
-  s3_req.data.blinded := amoalu.io.out.blindmask.orR
-  // s3_req.data.blinded := s2_data_word(0).blindmask(wordBytes-1,0).orR || s2_req(0).data.blinded
+  s3_req.data.clTag := amoalu.io.out.clTags(0)
+  val s3_blinded_xcpt = amoalu.io.blinded_xcpt
+  when (s3_blinded_xcpt) {
+    printf("[dcache] [amoalu] Blinded exception set to true.\n")
+  }
+
+  io.lsu.blinded_xcpt  := s2_blinded_xcpt || s3_blinded_xcpt
+
   val s3_way   = RegNext(s2_tag_match_way(0))
 
   dataWriteArb.io.in(0).valid       := s3_valid
   dataWriteArb.io.in(0).bits.addr   := s3_req.addr
   dataWriteArb.io.in(0).bits.wmask  := UIntToOH(s3_req.addr.extract(rowOffBits-1,offsetlsb))
   dataWriteArb.io.in(0).bits.data.bits        := Fill(rowWords, s3_req.data.bits)
-  dataWriteArb.io.in(0).bits.data.blindmask   := Fill(rowWords*coreDataBytes, s3_req.data.blinded)
+  // dataWriteArb.io.in(0).bits.data.blindmask   := Fill(rowWords*coreDataBytes, s3_req.data.blinded)
+  dataWriteArb.io.in(0).bits.data.clTags.map{t => t := s3_req.data.clTag}
   dataWriteArb.io.in(0).bits.blindedOnly      := s3_req.blindedOnly
   dataWriteArb.io.in(0).bits.way_en := s3_way
 

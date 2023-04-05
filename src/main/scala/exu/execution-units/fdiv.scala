@@ -97,8 +97,8 @@ class FDivSqrtUnit(implicit p: Parameters)
   val r_buffer_fin = Reg(new tile.FPInput)
 
   // does not support blinded inputs due to data-dependent latency; // TODO raise exception flag
-  val rs1_data = Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
-  val rs2_data = Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
+  val rs1_data = Mux(io.req.bits.rs1_data.clTag =/= 0.U, 0.U, io.req.bits.rs1_data.bits)
+  val rs2_data = Mux(io.req.bits.rs2_data.clTag =/= 0.U, 0.U, io.req.bits.rs2_data.bits)
 
   val fdiv_decoder = Module(new UOPCodeFDivDecoder)
   fdiv_decoder.io.uopc := io.req.bits.uop.uopc

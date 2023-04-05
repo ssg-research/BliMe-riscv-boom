@@ -1156,7 +1156,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
       wbresp.ready := true.B
       if (exe_units(i).hasCSR) {
         iregfile.io.write_ports(w_cnt).bits.data.bits := Mux(wbReadsCSR, csr.io.rw.rdata, wbdata_wire.bits)
-        iregfile.io.write_ports(w_cnt).bits.data.blinded := Mux(wbReadsCSR, false.B, wbdata_wire.blinded)
+        iregfile.io.write_ports(w_cnt).bits.data.clTag := Mux(wbReadsCSR, 0.U, wbdata_wire.clTag)
       } else {
         iregfile.io.write_ports(w_cnt).bits.data := wbdata_wire
       }

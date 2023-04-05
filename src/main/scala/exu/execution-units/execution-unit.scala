@@ -598,7 +598,7 @@ class FPUExeUnit(
     fp_sdq.io.enq.valid      := io.req.valid && io.req.bits.uop.uopc === uopSTA && !IsKilledByBranch(io.brupdate, io.req.bits.uop)
     fp_sdq.io.enq.bits.uop   := io.req.bits.uop
     fp_sdq.io.enq.bits.data.bits  := ieee(io.req.bits.rs2_data.bits)
-    fp_sdq.io.enq.bits.data.blinded := io.req.bits.rs2_data.blinded
+    fp_sdq.io.enq.bits.data.clTag := io.req.bits.rs2_data.clTag
     fp_sdq.io.enq.bits.predicated := false.B
     fp_sdq.io.enq.bits.fflags := DontCare
     fp_sdq.io.brupdate         := io.brupdate

@@ -130,10 +130,10 @@ class RegisterRead(
 
     val blinded_zero_wire = Wire(Blinded(UInt(registerWidth.W)))
     blinded_zero_wire.bits := 0.U(registerWidth.W)
-    blinded_zero_wire.blinded := false.B
+    blinded_zero_wire.clTag := 0.U
     val blinded_false_wire = Wire(Blinded(Bool()))
     blinded_false_wire.bits := false.B
-    blinded_false_wire.blinded := false.B
+    blinded_false_wire.clTag := 0.U
 
     if (numReadPorts > 0) rrd_rs1_data(w) := Mux(RegNext(rs1_addr === 0.U), blinded_zero_wire, io.rf_read_ports(idx+0).data)
     if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), blinded_zero_wire, io.rf_read_ports(idx+1).data)
@@ -170,10 +170,10 @@ class RegisterRead(
 
   val blinded_zero_wire = Wire(Blinded(UInt(registerWidth.W)))
   blinded_zero_wire.bits := 0.U(registerWidth.W)
-  blinded_zero_wire.blinded := false.B
+  blinded_zero_wire.clTag := 0.U
   val blinded_false_wire = Wire(Blinded(UInt(1.W)))
   blinded_false_wire.bits := 0.U(1.W)
-  blinded_false_wire.blinded := false.B
+  blinded_false_wire.clTag := 0.U
 
   for (w <- 0 until issueWidth) {
     val numReadPorts = numReadPortsArray(w)

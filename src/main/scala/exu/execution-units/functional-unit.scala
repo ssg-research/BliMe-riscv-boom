@@ -192,6 +192,29 @@ abstract class FunctionalUnit(
     val blinded_xcpt = Output(Valid(new Exception))
 
   })
+
+  def checkAndSetBlindedRs1Rs2(str : String) = {
+    val rs1_data = Wire(Blinded(io.req.bits.rs1_data.bits.cloneType))
+    val rs2_data = Wire(Blinded(io.req.bits.rs2_data.bits.cloneType))
+    when ((io.req.bits.rs1_data.clTag =/= io.req.bits.rs2_data.clTag && 
+          io.req.bits.rs1_data.clTag =/= 0.U && 
+          io.req.bits.rs2_data.clTag =/= 0.U)) {
+      io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
+      io.blinded_xcpt.bits.uop   := io.req.bits.uop
+      io.blinded_xcpt.valid      := !IsKilledByBranch(io.brupdate, io.req.bits.uop)
+      printf(str)
+      printf("rs1_data.clTag = %x, rs2_data.clTag = %x \n", io.req.bits.rs1_data.clTag, io.req.bits.rs2_data.clTag)
+      rs1_data.bits := 0.U
+      rs1_data.clTag := 0.U
+      rs2_data.bits := 0.U
+      rs2_data.clTag := 0.U
+    } .otherwise {
+      io.blinded_xcpt.valid := false.B
+      rs1_data := io.req.bits.rs1_data
+      rs2_data := io.req.bits.rs2_data
+    }
+    (rs1_data, rs2_data)
+  }
 }
 
 /**
@@ -317,11 +340,11 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 
     val uop_pc_blinded = Wire(Blinded(UInt(xLen.W)))
     uop_pc_blinded.bits := Sext(uop_pc, xLen)
-    uop_pc_blinded.blinded := false.B
+    uop_pc_blinded.clTag := 0.U
 
     val zero_tmp = Wire(Blinded(UInt(xLen.W)))
     zero_tmp.bits := 0.U
-    zero_tmp.blinded := false.B
+    zero_tmp.clTag := 0.U
 
     op1_data = Mux(uop.ctrl.op1_sel.asUInt === OP1_RS1 , io.req.bits.rs1_data,
                Mux(uop.ctrl.op1_sel.asUInt === OP1_PC  , uop_pc_blinded,
@@ -329,7 +352,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   } else {
     val zero_tmp = Wire(Blinded(UInt(xLen.W)))
     zero_tmp.bits := 0.U
-    zero_tmp.blinded := false.B
+    zero_tmp.clTag := 0.U
 
     op1_data = Mux(uop.ctrl.op1_sel.asUInt === OP1_RS1 , io.req.bits.rs1_data,
                                                          zero_tmp)
@@ -342,7 +365,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
                     Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data.bits,
                     Mux(uop.ctrl.op2_sel === OP2_NEXT, Mux(uop.is_rvc, 2.U, 4.U),
                                                        0.U))))
-  op2_data.blinded := Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data.blinded, false.B)
+  op2_data.clTag := Mux(uop.ctrl.op2_sel === OP2_RS2 , io.req.bits.rs2_data.clTag, false.B)
 
   val alu = Module(new freechips.rocketchip.rocket.ALU())
 
@@ -359,8 +382,8 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
     killed := true.B
   }
 
-  val rs1 = Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
-  val rs2 = Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
+  val rs1 = Mux(io.req.bits.rs1_data.clTag =/= 0.U, 0.U, io.req.bits.rs1_data.bits)
+  val rs2 = Mux(io.req.bits.rs2_data.clTag =/= 0.U, 0.U, io.req.bits.rs2_data.bits)
   val br_eq  = (rs1 === rs2)
   val br_ltu = (rs1.asUInt < rs2.asUInt)
   val br_lt  = (~(rs1(xLen-1) ^ rs2(xLen-1)) & br_ltu |
@@ -433,7 +456,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
     }
 
 
-    val jalr_target_base = Mux(io.req.bits.rs1_data.blinded, 0.S, io.req.bits.rs1_data.bits.asSInt)
+    val jalr_target_base = Mux(io.req.bits.rs1_data.clTag =/= 0.U, 0.S, io.req.bits.rs1_data.bits.asSInt)
     val jalr_target_xlen = Wire(UInt(xLen.W))
     jalr_target_xlen := (jalr_target_base + target_offset).asUInt
     val jalr_target = (encodeVirtualAddress(jalr_target_xlen, jalr_target_xlen).asSInt & -2.S).asUInt
@@ -468,15 +491,20 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   // val r_blinded = Reg(Vec(numStages, Bool()))
   val r_pred = Reg(Vec(numStages, Bool()))
   val blinded_alu_io_out = Wire(Blinded(UInt(dataWidth.W)))
-  blinded_alu_io_out.bits := alu.io.out
-  blinded_alu_io_out.blinded := op1_data.blinded || op2_data.blinded
+  when (op1_data.clTag =/= op2_data.clTag && op1_data.clTag =/= 0.U && op2_data.clTag =/= 0.U) {
+    blinded_alu_io_out.bits := 0.U
+    blinded_alu_io_out.clTag := 0.U
+  } .otherwise {
+    blinded_alu_io_out.bits := alu.io.out
+    blinded_alu_io_out.clTag := op1_data.clTag | op2_data.clTag
+  }
   val alu_out = Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
     Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
     Mux(io.req.bits.uop.uopc === uopMOV, io.req.bits.rs2_data, blinded_alu_io_out))
   
   val pc_sel_brjump_tmp = Wire(Blinded(UInt(dataWidth.W)))
   pc_sel_brjump_tmp.bits := pc_sel === PC_BRJMP
-  pc_sel_brjump_tmp.blinded := false.B // this is false here because we do not let pc_sel get calculated using blinded values (we zero them out)
+  pc_sel_brjump_tmp.clTag := 0.U // this is zero here because we do not let pc_sel get calculated using blinded values (we zero them out)
   r_val (0)     := io.req.valid
   r_data(0)     := Mux(io.req.bits.uop.is_sfb_br, pc_sel_brjump_tmp, alu_out) // TODO double-check how sfb optimization affects blindedness taint-tracking
   // r_blinded(0)  := io.req.bits.blinded_result
@@ -510,17 +538,23 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   io.blinded_xcpt.bits.cause  := (Causes.illegal_instruction).U
 
   if (isJmpUnit) {
-    when (pc_sel === PC_JALR && io.req.bits.rs1_data.blinded)
+    when (pc_sel === PC_JALR && io.req.bits.rs1_data.clTag =/= 0.U)
     {
       printf("[alu] blinded_xcpt set to true - JALR\n")
-      io.blinded_xcpt.valid     := true.B
+      io.blinded_xcpt.valid     := !IsKilledByBranch(io.brupdate, io.req.bits.uop)
       io.blinded_xcpt.bits.uop  := io.req.bits.uop
     }
   }
-  when (uop.is_br && (io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded))
+  when (uop.is_br && (io.req.bits.rs1_data.clTag =/= 0.U || io.req.bits.rs2_data.clTag =/= 0.U))
   {
     printf("[alu] blinded_xcpt set to true - BR\n")
-    io.blinded_xcpt.valid     := true.B
+    io.blinded_xcpt.valid     := !IsKilledByBranch(io.brupdate, io.req.bits.uop)
+    io.blinded_xcpt.bits.uop  := io.req.bits.uop
+  }
+  when (op1_data.clTag =/= op2_data.clTag && op1_data.clTag =/= 0.U && op2_data.clTag =/= 0.U)
+  {
+    printf("[alu] blinded_xcpt set to true - operand tags not zero and not equal")
+    io.blinded_xcpt.valid     := !IsKilledByBranch(io.brupdate, io.req.bits.uop)
     io.blinded_xcpt.bits.uop  := io.req.bits.uop
   }
   
@@ -542,7 +576,7 @@ class MemAddrCalcUnit(implicit p: Parameters)
   with freechips.rocketchip.rocket.constants.ScalarOpConstants
 {
   // perform address calculation
-  val sum = Mux(io.req.bits.rs1_data.blinded, 0.U, (io.req.bits.rs1_data.bits.asSInt + io.req.bits.uop.imm_packed(19,8).asSInt).asUInt)
+  val sum = Mux(io.req.bits.rs1_data.clTag =/= 0.U, 0.U, (io.req.bits.rs1_data.bits.asSInt + io.req.bits.uop.imm_packed(19,8).asSInt).asUInt)
   val ea_sign = Mux(sum(vaddrBits-1), ~sum(63,vaddrBits) === 0.U,
                                        sum(63,vaddrBits) =/= 0.U)
   val effective_address = Cat(ea_sign, sum(vaddrBits-1,0)).asUInt
@@ -582,12 +616,13 @@ class MemAddrCalcUnit(implicit p: Parameters)
   bkptu.io.scontext := io.scontext
 
   // storing or loading using a blinded addr
-  io.blinded_xcpt.valid := io.req.valid && (io.req.bits.uop.uopc === uopLD     || 
+  io.blinded_xcpt.valid := io.req.valid && !IsKilledByBranch(io.brupdate, io.req.bits.uop) &&
+                                          (io.req.bits.uop.uopc === uopLD     || 
                                             io.req.bits.uop.uopc === uopSTA    || 
                                             io.req.bits.uop.uopc === uopAMO_AG //|| 
                                             // io.req.bits.uop.uopc === uopBLND || 
                                             // io.req.bits.uop.uopc === uopRBLND
-                                            ) && io.req.bits.rs1_data.blinded
+                                            ) && io.req.bits.rs1_data.clTag =/= 0.U
   io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
   io.blinded_xcpt.bits.uop   := io.req.bits.uop
   when (io.blinded_xcpt.valid) {
@@ -637,17 +672,43 @@ class FPUUnit(implicit p: Parameters)
     dataWidth = 65,
     needsFcsr = true)
 {
+  val rs1_data = Wire(Blinded(UInt()))
+  val rs2_data = Wire(Blinded(UInt()))
+  val rs3_data = Wire(Blinded(UInt()))
+
+  when ((io.req.bits.rs1_data.clTag =/= io.req.bits.rs2_data.clTag && io.req.bits.rs1_data.clTag =/= 0.U && io.req.bits.rs2_data.clTag =/= 0.U) || 
+        (io.req.bits.rs1_data.clTag =/= io.req.bits.rs3_data.clTag && io.req.bits.rs1_data.clTag =/= 0.U && io.req.bits.rs3_data.clTag =/= 0.U) || 
+        (io.req.bits.rs2_data.clTag =/= io.req.bits.rs3_data.clTag && io.req.bits.rs2_data.clTag =/= 0.U && io.req.bits.rs3_data.clTag =/= 0.U)) {
+    
+    io.blinded_xcpt.bits.cause := (Causes.illegal_instruction).U
+    io.blinded_xcpt.bits.uop   := io.req.bits.uop
+    io.blinded_xcpt.valid      := !IsKilledByBranch(io.brupdate, io.req.bits.uop)
+    printf("[FPUUnit] blinded_xcpt set to true - blinded operands tagged with different tags")
+    rs1_data.bits := 0.U
+    rs1_data.clTag := 0.U
+    rs2_data.bits := 0.U
+    rs2_data.clTag := 0.U
+    rs3_data.bits := 0.U
+    rs3_data.clTag := 0.U
+  } .otherwise {
+    io.blinded_xcpt.valid      := false.B
+    rs1_data := io.req.bits.rs1_data
+    rs2_data := io.req.bits.rs2_data
+    rs3_data := io.req.bits.rs3_data
+  }
+
   val fpu = Module(new FPU())
   fpu.io.req.valid         := io.req.valid
   fpu.io.req.bits.uop      := io.req.bits.uop
-  fpu.io.req.bits.rs1_data := io.req.bits.rs1_data.bits
-  fpu.io.req.bits.rs2_data := io.req.bits.rs2_data.bits
-  fpu.io.req.bits.rs3_data := io.req.bits.rs3_data.bits
+  fpu.io.req.bits.rs1_data := rs1_data.bits
+  fpu.io.req.bits.rs2_data := rs2_data.bits
+  fpu.io.req.bits.rs3_data := rs3_data.bits
   fpu.io.req.bits.fcsr_rm  := io.fcsr_rm
 
-  val out_blinded = Pipe(io.req.valid, io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded || io.req.bits.rs3_data.blinded, numStages).bits
+  val out_clTag = Pipe(io.req.valid, rs1_data.clTag | rs2_data.clTag | rs3_data.clTag, numStages).bits
 
-  io.resp.bits.data.bits         := fpu.io.resp.bits.data.bits // blinded flag is not passed through FPU
+  io.resp.bits.data.bits         := fpu.io.resp.bits.data.bits // blinded tag is not passed through FPU
+  io.resp.bits.data.clTag        := out_clTag
   io.resp.bits.fflags.valid      := fpu.io.resp.bits.fflags.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := fpu.io.resp.bits.fflags.bits.flags // kill me now
@@ -667,6 +728,8 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
     needsFcsr = true)
   with tile.HasFPUParameters
 {
+  val (rs1_data, rs2_data) = checkAndSetBlindedRs1Rs2("[IntToFPUnit] blinded_xcpt set to true - blinded operands tagged with different tags")
+
   val fp_decoder = Module(new UOPCodeFPUDecoder) // TODO use a simpler decoder
   val io_req = io.req.bits
   fp_decoder.io.uopc := io_req.uop.uopc
@@ -678,8 +741,8 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   req <> fp_ctrl
 
   req.rm := fp_rm
-  req.in1 := unbox(io_req.rs1_data.bits, tag, None)
-  req.in2 := unbox(io_req.rs2_data.bits, tag, None)
+  req.in1 := unbox(rs1_data.bits, tag, None)
+  req.in2 := unbox(rs2_data.bits, tag, None)
   req.in3 := DontCare
   req.typ := ImmGenTyp(io_req.uop.imm_packed)
   req.fmt := DontCare // FIXME: this may not be the right thing to do here
@@ -694,13 +757,13 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   val ifpu = Module(new tile.IntToFP(intToFpLatency))
   ifpu.io.in.valid := io.req.valid
   ifpu.io.in.bits := req
-  ifpu.io.in.bits.in1 := io_req.rs1_data.bits
+  ifpu.io.in.bits.in1 := rs1_data.bits
   val out_double = Pipe(io.req.valid, fp_ctrl.typeTagOut === D, intToFpLatency).bits
-  val out_blinded = Pipe(io.req.valid, io_req.rs1_data.blinded || io_req.rs2_data.blinded, intToFpLatency).bits
+  val out_clTag = Pipe(io.req.valid, rs1_data.clTag | rs2_data.clTag, intToFpLatency).bits
 
 //io.resp.bits.data              := box(ifpu.io.out.bits.data, !io.resp.bits.uop.fp_single)
   io.resp.bits.data.bits         := box(ifpu.io.out.bits.data, out_double)
-  io.resp.bits.data.blinded      := out_blinded
+  io.resp.bits.data.clTag        := out_clTag
   io.resp.bits.fflags.valid      := ifpu.io.out.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := ifpu.io.out.bits.exc
@@ -757,8 +820,8 @@ class DivUnit(dataWidth: Int)(implicit p: Parameters)
   div.io.req.valid    := io.req.valid && !this.do_kill
   div.io.req.bits.dw  := io.req.bits.uop.ctrl.fcn_dw
   div.io.req.bits.fn  := io.req.bits.uop.ctrl.op_fcn
-  div.io.req.bits.in1 := Mux(io.req.bits.rs1_data.blinded, 0.U, io.req.bits.rs1_data.bits)
-  div.io.req.bits.in2 := Mux(io.req.bits.rs2_data.blinded, 0.U, io.req.bits.rs2_data.bits)
+  div.io.req.bits.in1 := Mux(io.req.bits.rs1_data.clTag =/= 0.U, 0.U, io.req.bits.rs1_data.bits)
+  div.io.req.bits.in2 := Mux(io.req.bits.rs2_data.clTag =/= 0.U, 0.U, io.req.bits.rs2_data.bits)
   // TODO raise exception if either rs1 or rs2 is blinded
   div.io.req.bits.tag := DontCare
   io.req.ready        := div.io.req.ready
@@ -785,18 +848,20 @@ class PipelinedMulUnit(numStages: Int, dataWidth: Int)(implicit p: Parameters)
     earliestBypassStage = 0,
     dataWidth = dataWidth)
 {
+  val (rs1_data, rs2_data) = checkAndSetBlindedRs1Rs2("[PipelinedMulUnit] blinded_xcpt set to true - blinded operands tagged with different tags")
+
   val imul = Module(new PipelinedMultiplier(xLen, numStages))
   // request
   imul.io.req.valid    := io.req.valid
   imul.io.req.bits.fn  := io.req.bits.uop.ctrl.op_fcn
   imul.io.req.bits.dw  := io.req.bits.uop.ctrl.fcn_dw
-  imul.io.req.bits.in1 := io.req.bits.rs1_data.bits
-  imul.io.req.bits.in2 := io.req.bits.rs2_data.bits
+  imul.io.req.bits.in1 := rs1_data.bits
+  imul.io.req.bits.in2 := rs2_data.bits
   imul.io.req.bits.tag := DontCare
 
-  val out_blinded = Pipe(io.req.valid, io.req.bits.rs1_data.blinded || io.req.bits.rs2_data.blinded, numStages).bits
+  val out_clTag = Pipe(io.req.valid, rs1_data.clTag | rs2_data.clTag, numStages).bits
 
   // response
   io.resp.bits.data.bits    := imul.io.resp.bits.data
-  io.resp.bits.data.blinded := out_blinded
+  io.resp.bits.data.clTag := out_clTag
 }

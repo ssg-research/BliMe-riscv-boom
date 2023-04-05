@@ -146,7 +146,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   fregister_read.io.rf_read_ports <> fregfile.io.read_ports
   fregister_read.io.prf_read_ports map { port => 
     port.data.bits := false.B
-    port.data.blinded := false.B
+    port.data.clTag := 0.U
   }
 
   fregister_read.io.iss_valids <> iss_valids

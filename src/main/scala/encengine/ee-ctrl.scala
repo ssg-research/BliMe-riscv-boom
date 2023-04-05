@@ -33,11 +33,11 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
     val dmem_req_addr     = Output(Bits(coreMaxAddrBits.W))
     val dmem_req_cmd      = Output(Bits(M_SZ.W))
     val dmem_req_size     = Output(Bits(log2Ceil(coreDataBytes + 1).W))
-    val dmem_req_data     = Output(BlindedMem(Bits(coreDataBits.W), Bits(coreDataBytes.W)))
+    val dmem_req_data     = Output(BlindedMem(Bits(coreDataBits.W), 1))
 
     val dmem_resp_val     = Input(Bool())
     val dmem_resp_tag     = Input(Bits(7.W))
-    val dmem_resp_data    = Input(BlindedMem(Bits(coreDataBits.W), Bits(coreDataBytes.W)))
+    val dmem_resp_data    = Input(BlindedMem(Bits(coreDataBits.W), 1))
 
     val sfence            = Output(Bool())
 
@@ -55,11 +55,10 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
   val mem_buf = Module(new MemBuf(16, false, false, false))
 
   val chacha = Module(new ChaCha20(10))
-
   // ###############################################
 
-  val start_addr = Mux(io.rocc_rs1.blinded, 0.U, io.rocc_rs1.bits)
-  val length     = Mux(io.rocc_rs2.blinded, 0.U, io.rocc_rs2.bits) // NB: We assume length is always a multiple of 8
+  val start_addr = Mux(io.rocc_rs1.clTag =/= 0.U, 0.U, io.rocc_rs1.bits)
+  val length     = Mux(io.rocc_rs2.clTag =/= 0.U, 0.U, io.rocc_rs2.bits) // NB: We assume length is always a multiple of 8
 
   // val busy = RegInit(false.B)
 
@@ -94,6 +93,9 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
     bundle.valid := false.B
     bundle
   })
+  val client_id = Reg(Valid(UInt(Blinded.CL_TAG_SIZE.W)))
+  client_id.bits := 5.U
+  client_id.valid := true.B
   // val counter = new Counter(scala.math.pow(2, 33).toInt)
   val counter_reset = WireDefault(false.B)
   val counter =  withReset(counter_reset)(new Counter(scala.math.pow(2, 33).toInt))
@@ -172,11 +174,11 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
 
     when (write_addr >= (start_addr + 16.U)) {
       io.dmem_req_data.bits       := mem_buf.io.q.deq.bits.data.bits ^ ks_buf.io.deq.bits
-      assert(mem_buf.io.q.deq.bits.data.blindmask.andR === mem_buf.io.q.deq.bits.data.blindmask.orR, "Assumption that blindmask bits are all the same is not true!")
-      io.dmem_req_data.blindmask  := Mux(io.rocc_funct === 0.U, true.B, false.B)
+      // assert(mem_buf.io.q.deq.bits.data.blindmask.andR === mem_buf.io.q.deq.bits.data.blindmask.orR, "Assumption that blindmask bits are all the same is not true!")
+      io.dmem_req_data.clTags(0)  := Mux(io.rocc_funct === 0.U, client_id.bits, 0.U) //true.B, false.B)
     } .otherwise {
       io.dmem_req_data.bits       := Mux(write_addr === start_addr, nonce.bits(63,0), Cat(Fill(32, 0.U), nonce.bits(95,64)))
-      io.dmem_req_data.blindmask  := false.B
+      io.dmem_req_data.clTags(0)  := 0.U //false.B
     }
 
     when (io.dmem_req_rdy) {
@@ -249,10 +251,10 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
       val read_resp_tag = io.dmem_resp_tag(io.dmem_req_tag.getWidth-2,0)
       when (io.rocc_funct === 0.U && read_resp_tag < 2.U) {
         when (read_resp_tag === 0.U) {
-          nonce.bits := Cat(0.U(64.W), Mux(io.dmem_resp_data.blindmask.orR, 0.U(64.W), io.dmem_resp_data.bits(63,0)))
+          nonce.bits := Cat(0.U(64.W), Mux(io.dmem_resp_data.clTags(0) =/= 0.U, 0.U(64.W), io.dmem_resp_data.bits(63,0)))
           nonce.valid      := false.B
         } .otherwise {
-          nonce.bits := Cat(0.U(32.W), Mux(io.dmem_resp_data.blindmask.orR, 0.U(32.W), io.dmem_resp_data.bits(31,0)), nonce.bits(63,0))
+          nonce.bits := Cat(0.U(32.W), Mux(io.dmem_resp_data.clTags(0) =/= 0.U, 0.U(32.W), io.dmem_resp_data.bits(31,0)), nonce.bits(63,0))
           nonce.valid := true.B
           assert(nonce.bits(127,96) === 0.U)
         }
