@@ -54,7 +54,8 @@ class EECtrlModule()(implicit val p: Parameters) extends Module
   // mem_buf length = 16, mem_buf width = 64
   val mem_buf = Module(new MemBuf(16, false, false, false))
 
-  val chacha = Module(new ChaCha20(10))
+  val chacha = Module(new ChaCha20(19))
+
   // ###############################################
 
   val start_addr = Mux(io.rocc_rs1.clTag =/= 0.U, 0.U, io.rocc_rs1.bits)
