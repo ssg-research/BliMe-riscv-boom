@@ -267,6 +267,7 @@ class WithNLarge8Booms(n: Int = 1, overrideIdOffset: Option[Int] = None) extends
 
 class WithNLarge8BoomsGem5(n: Int = 1, overrideIdOffset: Option[Int] = None) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
+  new WithEncEngine ++
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
       val prev = up(TilesLocated(InSubsystem), site)
